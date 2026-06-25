@@ -936,9 +936,11 @@ with tabs[7]:
                               (fc_base.get(spec, [0]*13)[fi] if spec in fc_base else 0.0)
                     curr    = st.session_state.weekly_ov.get(ov_key, fc_def)
                     hint    = "🔒 " if is_lk else ("🔵 " if is_ico else "")
+                    # Clamp value within min/max bounds — large FX trades can exceed limits
+                    safe_val = float(np.clip(float(curr), -9_999_999.0, 9_999_999.0))
                     new_v   = st.number_input(
                         f"{hint}{label}",
-                        value=float(curr),
+                        value=safe_val,
                         min_value=-9_999_999.0, max_value=9_999_999.0,
                         step=1000.0, format="%.0f",
                         key=f"wov_{label}_{fi}")
