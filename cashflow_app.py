@@ -987,45 +987,14 @@ with tabs[7]:
         [{k: v for k, v in r.items() if not k.startswith('_')} for r in display_rows]
     ).set_index('Row')
 
-    def style_fn(df):
-        s = pd.DataFrame('', index=df.index, columns=df.columns)
-        act_cols = [c for c in [wk_hdrs[i] for i in range(n_actuals)] if c in df.columns]
-        fc_cols  = [c for c in [wk_hdrs[i] for i in range(n_actuals, N_W)] if c in df.columns]
-        for rd in display_rows:
-            idx = rd['Row']
-            if idx not in df.index: continue
-            kind = rd['_kind']
-            try:
-                if kind == 'header':
-                    s.loc[idx] = 'background-color:#1F3864;color:white;font-weight:bold'
-                elif kind in ('total', 'balance'):
-                    s.loc[idx] = 'background-color:#DAE3F3;font-weight:bold;color:#1F3864'
-                elif kind == 'sep':
-                    s.loc[idx] = 'background-color:#F2F2F2'
-                else:
-                    for c in act_cols:
-                        if c in df.columns:
-                            s.loc[idx, c] = 'background-color:#FAFAFA'
-                    lbl = rd['_label']
-                    for ci, c in enumerate(fc_cols):
-                        if c not in df.columns: continue
-                        wi     = ci + n_actuals
-                        ov_key = f"{lbl}_{wi}"
-                        if 'INTERCO' in lbl:
-                            s.loc[idx, c] = 'background-color:#F2F6FC;color:#5F5E5A'
-                        elif ov_key in st.session_state.weekly_ov:
-                            s.loc[idx, c] = 'background-color:#FFF0CC;color:#633806;font-weight:bold'
-                        elif lbl in WEEKLY_LOCK:
-                            s.loc[idx, c] = 'background-color:#FFF8E0;color:#633806'
-                        else:
-                            s.loc[idx, c] = 'background-color:#F2F6FC'
-            except (KeyError, TypeError):
-                continue
-        return s
-
+    # Render weekly table — plain dataframe, no custom styler (avoids pandas KeyError)
+    # Highlight locked/override rows with emoji prefix in the Row label instead
+    df_plain = df_display.copy().reset_index()
+    df_plain['Row'] = df_plain['Row'].apply(lambda x: x.strip())
     st.dataframe(
-        df_display.style.apply(style_fn, axis=None),
+        df_plain,
         use_container_width=True,
+        hide_index=True,
         height=min(80 + len(display_rows) * 32, 900),
     )
 
