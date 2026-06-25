@@ -273,17 +273,9 @@ def build_weekly_forecast(weekly, od_weekly, n_fc=13, fx_rates=None):
     all_specs = [s for _, s in RECEIPT_ROWS[:-1]] + [s for _, s in PAYMENT_ROWS]
     all_specs = [s for s in all_specs if s != 'OVERNIGHT DEPOSIT']
 
-    # YoY trend per spec
-    trend = {}
-    for spec in all_specs:
-        if spec not in weekly.columns:
-            trend[spec] = 1.0; continue
-        rec      = weekly[spec].tail(13).sum()
-        py_end   = last_date - pd.Timedelta(weeks=52)
-        py_start = py_end   - pd.Timedelta(weeks=12)
-        pri = weekly.loc[(weekly.index >= py_start) & (weekly.index <= py_end), spec].sum()
-        trend[spec] = float(np.clip(rec / pri, 0.3, 3.0)) if abs(pri) > 1000 else 1.0
-
+    # No trend multiplier — prior year same week IS the forecast.
+    # Trend factors were distorting badly because the data window is short.
+    # Same week last year is the correct seasonal anchor for this business.
     forecast = {spec: [] for spec in all_specs}
     forecast['INTERCO']     = [0] * n_fc   # blank — net zero assumed
     forecast['OD_INTEREST'] = [11000] * n_fc
@@ -317,15 +309,22 @@ def build_weekly_forecast(weekly, od_weekly, n_fc=13, fx_rates=None):
         if spec in ('INTERCO', 'PAYROLL'): continue
         col_fc = []
         for fw in fc_weeks:
+            # Use prior year same ISO week — search ±2 weeks if exact match missing
             py_date = fw - pd.Timedelta(weeks=52)
-            base = 0.0
+            base = None
             for delta in [0, 1, -1, 2, -2]:
                 sd = py_date + pd.Timedelta(weeks=delta)
                 if spec in weekly.columns and sd in weekly.index:
-                    base = float(weekly.loc[sd, spec]); break
-            else:
-                base = float(weekly[spec].tail(8).mean()) if spec in weekly.columns else 0.0
-            col_fc.append(round(base * trend.get(spec, 1.0)))
+                    base = float(weekly.loc[sd, spec])
+                    break
+            if base is None:
+                # Fall back to median of same month across all years in data
+                if spec in weekly.columns:
+                    same_mn = weekly[spec][weekly.index.month == fw.month]
+                    base = float(same_mn.median()) if len(same_mn) > 0 else 0.0
+                else:
+                    base = 0.0
+            col_fc.append(round(base))
         forecast[spec] = col_fc
 
     return forecast, fc_weeks
