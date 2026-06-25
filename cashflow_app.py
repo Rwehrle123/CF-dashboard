@@ -445,22 +445,85 @@ if use_actual_pos:
         f"**Total: £{pos_total:,.0f}** · UK: £{pos_total_uk:,.0f} · Ireland: £{pos_total_ireland:,.0f}"
     )
 
-if hpct_now >= 0.20:
-    st.success(f"✅ COMPLIANT — UK headroom {fmt(hroom_now)} ({hpct_now:.0%} of req {fmt(req_now)})")
-elif hpct_now >= 0:
-    st.warning(f"⚠️ CAUTION — UK headroom {fmt(hroom_now)} ({hpct_now:.0%}). Approaching minimum.")
+# Compliance badge rendered inside KPI block below
+
+# ── KPI calculation ───────────────────────────────────────────────────────────
+# Book2 month-end forecast values for current month
+fc_me_uk  = float(latest_fc['cash_uk'])
+fc_me_ie  = float(latest_fc['cash_ireland'])
+fc_me_tot = float(latest_fc['total_cash'])
+kpi_client_mon = float(latest_fc['client_money'])
+
+if use_actual_pos and pos_date is not None:
+    # Work out remaining days in current month from pos_date
+    import calendar
+    days_in_month  = calendar.monthrange(pos_date.year, pos_date.month)[1]
+    days_elapsed   = pos_date.day
+    days_remaining = days_in_month - days_elapsed
+    frac_remaining = days_remaining / days_in_month if days_in_month > 0 else 0
+
+    # Estimate remaining flows this month using prior year same month as proxy
+    yr_ly = latest_yr - 1
+    mn_ly = latest_mn
+    ly_uk_in  = sum(safe_get(uk_in_spec,  yr_ly, mn_ly, c) for c in KEY_INFLOW  if c in uk_in_spec.columns)
+    ly_uk_out = sum(safe_get(uk_out_spec, yr_ly, mn_ly, c) for c in KEY_OUTFLOW if c in uk_out_spec.columns)
+    ly_ie_in  = sum(safe_get(ie_in_spec,  yr_ly, mn_ly, c) for c in KEY_INFLOW  if c in ie_in_spec.columns)
+    ly_ie_out = sum(safe_get(ie_out_spec, yr_ly, mn_ly, c) for c in KEY_OUTFLOW if c in ie_out_spec.columns)
+
+    # Remaining expected flows = prior year full month × fraction of month left
+    rem_uk_in  = ly_uk_in  * frac_remaining
+    rem_uk_out = ly_uk_out * frac_remaining   # negative
+    rem_ie_in  = ly_ie_in  * frac_remaining
+    rem_ie_out = ly_ie_out * frac_remaining   # negative
+
+    # Forecast month-end = actual snapshot + remaining expected flows
+    kpi_uk_cash    = pos_total_uk      + rem_uk_in + rem_uk_out
+    kpi_ie_cash    = pos_total_ireland + rem_ie_in + rem_ie_out
+    kpi_total_cash = kpi_uk_cash + kpi_ie_cash
+
+    # Still to collect / still to pay (remaining in month, UK only)
+    still_to_collect = rem_uk_in
+    still_to_pay     = rem_uk_out  # negative
+    kpi_subtitle     = f"Forecast {pd.Timestamp(latest_yr, latest_mn, days_in_month).strftime('%d %b')} · {days_remaining}d remaining"
 else:
-    st.error(f"🚨 BREACH — UK cash {fmt(abs(hroom_now))} below requirement")
+    # No actual position — use Book2 as-is
+    kpi_uk_cash      = fc_me_uk
+    kpi_ie_cash      = fc_me_ie
+    kpi_total_cash   = fc_me_tot
+    still_to_collect = None
+    still_to_pay     = None
+    kpi_subtitle     = f"Book2 forecast {MN[latest_mn]} {latest_yr} month-end"
+
+# Headroom based on forecast month-end UK cash
+hroom_now = kpi_uk_cash - req_now
+hpct_now  = hroom_now / req_now if req_now > 0 else 0
+
+if hpct_now >= 0.20:
+    st.success(f"✅ COMPLIANT — UK headroom {fmt(hroom_now)} ({hpct_now:.0%} of req {fmt(req_now)}) · {kpi_subtitle}")
+elif hpct_now >= 0:
+    st.warning(f"⚠️ CAUTION — UK headroom {fmt(hroom_now)} ({hpct_now:.0%}) · {kpi_subtitle}")
+else:
+    st.error(f"🚨 BREACH — UK cash {fmt(abs(hroom_now))} below requirement · {kpi_subtitle}")
 
 k = st.columns(6)
-k[0].metric("UK Cash",      fmt(latest_fc['cash_uk']))
-k[1].metric("Ireland Cash", fmt(latest_fc['cash_ireland']))
-k[2].metric("Total Cash",   fmt(latest_fc['total_cash']))
-k[3].metric("Client Money", fmt(latest_fc['client_money']))
-k[4].metric("UK Required",  fmt(req_now))
-k[5].metric("UK Headroom",  fmt(hroom_now),
+k[0].metric("UK Cash (fcst m/e)",      fmt(kpi_uk_cash),
+            delta=f"actual now: {fmt(pos_total_uk)}" if use_actual_pos else None)
+k[1].metric("Ireland Cash (fcst m/e)", fmt(kpi_ie_cash),
+            delta=f"actual now: {fmt(pos_total_ireland)}" if use_actual_pos else None)
+k[2].metric("Total Cash (fcst m/e)",   fmt(kpi_total_cash),
+            delta=f"actual now: {fmt(pos_total)}" if use_actual_pos else None)
+k[3].metric("Client Money",            fmt(kpi_client_mon))
+k[4].metric("UK Required",             fmt(req_now))
+k[5].metric("UK Headroom (fcst m/e)",  fmt(hroom_now),
             delta=f"{hpct_now:.0%}",
             delta_color="normal" if hroom_now >= 0 else "inverse")
+
+if use_actual_pos and still_to_collect is not None:
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Still to collect (UK, LY basis)", fmt(still_to_collect))
+    c2.metric("Still to pay (UK, LY basis)",     fmt(abs(still_to_pay)))
+    c3.metric("Net remaining flows (UK)",        fmt(still_to_collect + still_to_pay),
+              delta_color="normal" if (still_to_collect + still_to_pay) >= 0 else "inverse")
 
 st.divider()
 
