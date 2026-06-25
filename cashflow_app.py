@@ -469,47 +469,66 @@ if use_actual_pos and pos_date is not None:
     days_in_month  = calendar.monthrange(pos_date.year, pos_date.month)[1]
     days_elapsed   = pos_date.day
     days_remaining = days_in_month - days_elapsed
+    weeks_remaining = days_remaining / 7.0
 
-    yr_ly = latest_yr - 1
-    mn_ly = latest_mn
+    # ── Remaining flows: rolling 4-week average (excludes lumpy FX/Interco) ──
+    # This avoids distortion from prior year opening-month anomalies.
+    # We use the last 4 weeks of actual weekly flows as the run rate,
+    # then pro-rate by days remaining in the month.
+    KEY_IN_CORE  = ['AGENT RECEIPTS','FD RECEIPT','DIRECT RECEIPTS',
+                    'OTHER RECEIPTS','TUI RECEIPT']
+    KEY_OUT_CORE = ['AP COGS','AP OVH','FLIGHT COSTS','PAYROLL','OTHER COSTS','TAX']
 
-    # Prior year full month flows
-    ly_uk_in  = sum(safe_get(uk_in_spec,  yr_ly, mn_ly, c) for c in KEY_INFLOW  if c in uk_in_spec.columns)
-    ly_uk_out = sum(safe_get(uk_out_spec, yr_ly, mn_ly, c) for c in KEY_OUTFLOW if c in uk_out_spec.columns)
-    ly_ie_in  = sum(safe_get(ie_in_spec,  yr_ly, mn_ly, c) for c in KEY_INFLOW  if c in ie_in_spec.columns)
-    ly_ie_out = sum(safe_get(ie_out_spec, yr_ly, mn_ly, c) for c in KEY_OUTFLOW if c in ie_out_spec.columns)
+    # Build weekly pivot from df_op (UK only, operational)
+    df_op_w = df_op[df_op['entity'] == 'UK'].copy()
+    df_op_w['WeekStart'] = pd.to_datetime(
+        df_op_w['PostDate'].dt.to_period('W-SUN').apply(lambda p: p.start_time))
 
-    # Actual-to-date flows this month from bank data
-    act_uk_in_mtd  = safe_entity(entity_m, latest_yr, latest_mn, 'UK',      'inflow')
-    act_uk_out_mtd = safe_entity(entity_m, latest_yr, latest_mn, 'UK',      'outflow')  # negative
-    act_ie_in_mtd  = safe_entity(entity_m, latest_yr, latest_mn, 'Ireland', 'inflow')
-    act_ie_out_mtd = safe_entity(entity_m, latest_yr, latest_mn, 'Ireland', 'outflow')  # negative
+    wk_core_in  = (df_op_w[df_op_w['TrnSpec'].isin(KEY_IN_CORE)]
+                   .groupby('WeekStart')['inflow'].sum())
+    wk_core_out = (df_op_w[df_op_w['TrnSpec'].isin(KEY_OUT_CORE)]
+                   .groupby('WeekStart')['outflow'].sum())
 
-    # Implied remaining = LY full month minus what's already happened this month
-    # Clamped at zero — can't have negative remaining (if already exceeded LY, assume nothing left)
-    raw_rem_uk_in  = max(0, ly_uk_in  - act_uk_in_mtd)
-    raw_rem_uk_out = min(0, ly_uk_out - act_uk_out_mtd)  # keep negative
-    raw_rem_ie_in  = max(0, ly_ie_in  - act_ie_in_mtd)
-    raw_rem_ie_out = min(0, ly_ie_out - act_ie_out_mtd)
+    avg_wk_in  = float(wk_core_in.tail(4).mean())  if len(wk_core_in)  >= 1 else 0.0
+    avg_wk_out = float(wk_core_out.tail(4).mean()) if len(wk_core_out) >= 1 else 0.0
 
     # Apply sidebar adjustment sliders
+    raw_rem_uk_in  = avg_wk_in  * weeks_remaining
+    raw_rem_uk_out = avg_wk_out * weeks_remaining   # negative
+
     rem_uk_in  = raw_rem_uk_in  * (1 + adj_receipts / 100)
     rem_uk_out = raw_rem_uk_out * (1 + adj_payments / 100)
-    rem_ie_in  = raw_rem_ie_in  * (1 + adj_receipts / 100)
-    rem_ie_out = raw_rem_ie_out * (1 + adj_payments / 100)
+
+    # Ireland: simpler — use same fraction of LY month (Ireland less affected by opening anomaly)
+    yr_ly = latest_yr - 1; mn_ly = latest_mn
+    ly_ie_in  = sum(safe_get(ie_in_spec,  yr_ly, mn_ly, c)
+                    for c in KEY_INFLOW if c in ie_in_spec.columns)
+    ly_ie_out = sum(safe_get(ie_out_spec, yr_ly, mn_ly, c)
+                    for c in KEY_OUTFLOW if c in ie_out_spec.columns)
+    rem_ie_in  = ly_ie_in  * (days_remaining / days_in_month) * (1 + adj_receipts / 100)
+    rem_ie_out = ly_ie_out * (days_remaining / days_in_month) * (1 + adj_payments / 100)
 
     # Forecast month-end = actual snapshot + remaining expected flows
     kpi_uk_cash    = pos_total_uk      + rem_uk_in + rem_uk_out
     kpi_ie_cash    = pos_total_ireland + rem_ie_in + rem_ie_out
     kpi_total_cash = kpi_uk_cash + kpi_ie_cash
 
+    # ── Room to pay ──────────────────────────────────────────────────────────
+    # Key question: how much can I pay out over remaining days and still hit
+    # the forecast month-end close?
+    # Room to pay = Actual UK now + Expected remaining receipts − Forecast close
+    # Positive = you have budget to pay; negative = you need to hold back
+    room_to_pay     = pos_total_uk + rem_uk_in - fc_me_uk
+    current_run_rate = rem_uk_out  # what outflows look like at current pace (negative)
+    ap_headroom      = room_to_pay - abs(current_run_rate)  # spare capacity vs run rate
+
     still_to_collect = rem_uk_in
-    still_to_pay     = rem_uk_out  # negative
+    still_to_pay     = rem_uk_out   # negative
     adj_note = ""
-    if adj_receipts != 0: adj_note += f" · receipts {adj_receipts:+d}% vs LY"
-    if adj_payments != 0: adj_note += f" · AP {adj_payments:+d}% vs LY"
+    if adj_receipts != 0: adj_note += f" · receipts {adj_receipts:+d}%"
+    if adj_payments != 0: adj_note += f" · AP {adj_payments:+d}%"
     kpi_subtitle = (f"Forecast {pd.Timestamp(latest_yr, latest_mn, days_in_month).strftime('%d %b')} · "
-                    f"{days_remaining}d remaining · LY implied{adj_note}")
+                    f"{days_remaining}d remaining · 4wk run rate{adj_note}")
 else:
     # No actual position — use Book2 as-is
     kpi_uk_cash      = fc_me_uk
@@ -544,11 +563,20 @@ k[5].metric("UK Headroom (fcst m/e)",  fmt(hroom_now),
             delta_color="normal" if hroom_now >= 0 else "inverse")
 
 if use_actual_pos and still_to_collect is not None:
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Still to collect (UK, LY basis)", fmt(still_to_collect))
-    c2.metric("Still to pay (UK, LY basis)",     fmt(abs(still_to_pay)))
-    c3.metric("Net remaining flows (UK)",        fmt(still_to_collect + still_to_pay),
-              delta_color="normal" if (still_to_collect + still_to_pay) >= 0 else "inverse")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"Expected receipts (remaining {days_remaining}d)",
+              fmt(still_to_collect),
+              delta="4-week run rate basis", delta_color="off")
+    c2.metric(f"AP run rate (remaining {days_remaining}d)",
+              fmt(abs(still_to_pay)),
+              delta="4-week run rate basis", delta_color="off")
+    c3.metric("Room to pay vs forecast close",
+              fmt(room_to_pay),
+              delta=f"{'within budget' if room_to_pay >= abs(still_to_pay) else 'hold back AP'}",
+              delta_color="normal" if room_to_pay >= abs(still_to_pay) else "inverse")
+    c4.metric("Spare AP capacity vs run rate",
+              fmt(ap_headroom),
+              delta_color="normal" if ap_headroom >= 0 else "inverse")
 
 st.divider()
 
