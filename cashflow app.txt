@@ -1,0 +1,121 @@
+# ── Account → Entity mapping (HARD CODED) ─────────────────────────────────────
+ACCOUNT_ENTITY_MAP = {
+    # UK
+    'SHTL GBP': 'UK',
+    'SHTL EUR': 'UK',
+    'SHTL USD': 'UK',
+    'SHTL PAY GBP': 'UK',
+    'SHTL PAY': 'UK',
+    'TMOOD GBP': 'UK',
+    'TMOOD EUR': 'UK',
+    'TMOOD USD': 'UK',
+    'TMOOD CAD': 'UK',
+    'HJT GBP': 'UK',
+    'HJT AH GBP': 'UK',
+
+    # Ireland
+    'SHGI EUR': 'Ireland',
+    'SHGI GBP': 'Ireland',
+    'SHGI USD': 'Ireland',
+    'SHGI CAD': 'Ireland',
+    'AHD EURO CURRENT ACCOUNT': 'Ireland',
+    'BOA': 'Ireland',  # ✅ FIXED
+}
+
+
+# ── Currency mapping (KEEP AS-IS) ─────────────────────────────────────────────
+def get_currency(acc):
+    if 'EUR' in acc: return 'EUR'
+    if 'USD' in acc: return 'USD'
+    if 'CAD' in acc: return 'CAD'
+    if acc == 'BOA': return 'USD'
+    return 'GBP'
+
+
+# ── LOAD TRANSACTIONS (UPDATED) ───────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
+def load_transactions(b):
+    df = pd.read_excel(io.BytesIO(b), sheet_name='Data Sheet')
+
+    df['PostDate'] = pd.to_datetime(df['PostDate'])
+
+    # ✅ Clean account name
+    df['AccountName'] = df['AccountName'].astype(str).str.strip()
+
+    # ✅ Apply hardcoded mapping
+    df['entity'] = df['AccountName'].map(ACCOUNT_ENTITY_MAP)
+
+    # ✅ Safe fallback if mapping missing
+    if df['entity'].isna().any():
+        missing_accounts = df.loc[df['entity'].isna(), 'AccountName'].unique()
+
+        st.warning(
+            f"⚠️ Unmapped accounts detected: {', '.join(missing_accounts)}. "
+            f"Defaulting to Ireland. Update ACCOUNT_ENTITY_MAP if required."
+        )
+
+        df['entity'] = df['entity'].fillna('Ireland')
+
+    # ✅ Visibility check (sanity check)
+    st.caption(
+        f"Entity split — UK: {(df['entity']=='UK').sum():,} rows · "
+        f"Ireland: {(df['entity']=='Ireland').sum():,} rows"
+    )
+
+    df['TrnSpec'] = df['TrnSpec'].fillna('OTHER').str.strip()
+    df.loc[df['TrnSpec'].str.upper().str.strip() == 'PAYROLL  ', 'TrnSpec'] = 'PAYROLL'
+
+    df['Currency'] = df['AccountName'].apply(get_currency)
+
+    df['Year'] = df['PostDate'].dt.year.astype(int)
+    df['Month'] = df['PostDate'].dt.month.astype(int)
+
+    df['WeekStart'] = df['PostDate'].dt.to_period('W-SUN').apply(lambda p: p.start_time)
+
+    df_op = df[df['TrnSpec'] != 'OVERNIGHT DEPOSIT'].copy()
+    df_op['inflow'] = df_op['Amount'].clip(lower=0)
+    df_op['outflow'] = df_op['Amount'].clip(upper=0)
+
+    return df, df_op
+
+
+# ── WEEKLY BUILD (UPDATED) ────────────────────────────────────────────────────
+def build_weekly(df_raw, fx_rates):
+    df = df_raw.copy()
+
+    df['AccountName'] = df['AccountName'].astype(str).str.strip()
+
+    # ✅ Use same hardcoded mapping
+    df['entity'] = df['AccountName'].map(ACCOUNT_ENTITY_MAP)
+    df['entity'] = df['entity'].fillna('Ireland')
+
+    df['TrnSpec'] = df['TrnSpec'].fillna('OTHER').str.strip()
+    df.loc[df['TrnSpec'].str.upper().str.strip() == 'PAYROLL  ', 'TrnSpec'] = 'PAYROLL'
+
+    df['Currency'] = df['AccountName'].apply(get_currency)
+
+    df['PostDate'] = pd.to_datetime(df['PostDate'])
+    df['WeekStart'] = df['PostDate'].dt.to_period('W-SUN').apply(lambda p: p.start_time)
+
+    # FX conversion
+    df['Amount_GBP'] = df.apply(
+        lambda r: r['Amount'] * fx_rates.get(r['Currency'], 1.0), axis=1
+    )
+
+    # UK operational only
+    df_uk = df[(df['TrnSpec'] != 'OVERNIGHT DEPOSIT') & (df['entity'] == 'UK')].copy()
+
+    # Overnight deposit
+    df_od = df[(df['TrnSpec'] == 'OVERNIGHT DEPOSIT') & (df['entity'] == 'UK')].copy()
+    od_weekly = df_od.groupby('WeekStart')['Amount_GBP'].sum().round(0)
+
+    # Weekly pivot
+    weekly = (
+        df_uk.groupby(['WeekStart', 'TrnSpec'])['Amount_GBP']
+        .sum()
+        .round(0)
+        .unstack('TrnSpec')
+        .fillna(0)
+    )
+
+    return weekly, od_weekly
