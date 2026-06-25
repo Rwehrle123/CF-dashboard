@@ -536,9 +536,12 @@ else:
     kpi_total_cash   = fc_me_tot
     still_to_collect = None
     still_to_pay     = None
+    room_to_pay      = None
+    ap_headroom      = None
+    days_remaining   = 0
     kpi_subtitle     = f"Book2 forecast {MN[latest_mn]} {latest_yr} month-end"
 
-# Headroom based on forecast month-end UK cash
+# Headroom: uses overridden req_now if client money override is set
 hroom_now = kpi_uk_cash - req_now
 hpct_now  = hroom_now / req_now if req_now > 0 else 0
 
@@ -556,13 +559,19 @@ k[1].metric("Ireland Cash (fcst m/e)", fmt(kpi_ie_cash),
             delta=f"actual now: {fmt(pos_total_ireland)}" if use_actual_pos else None)
 k[2].metric("Total Cash (fcst m/e)",   fmt(kpi_total_cash),
             delta=f"actual now: {fmt(pos_total)}" if use_actual_pos else None)
-k[3].metric("Client Money",            fmt(kpi_client_mon))
-k[4].metric("UK Required",             fmt(req_now))
+k[3].metric("Client Money",
+            fmt(kpi_client_mon),
+            delta="overridden" if use_cm_override else None,
+            delta_color="off")
+k[4].metric("UK Required",
+            fmt(req_now),
+            delta=f"{uk_pct}% of {'override' if use_cm_override else 'Book2'}",
+            delta_color="off")
 k[5].metric("UK Headroom (fcst m/e)",  fmt(hroom_now),
             delta=f"{hpct_now:.0%}",
             delta_color="normal" if hroom_now >= 0 else "inverse")
 
-if use_actual_pos and still_to_collect is not None:
+if use_actual_pos and still_to_collect is not None and room_to_pay is not None:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(f"Expected receipts (remaining {days_remaining}d)",
               fmt(still_to_collect),
@@ -572,7 +581,7 @@ if use_actual_pos and still_to_collect is not None:
               delta="4-week run rate basis", delta_color="off")
     c3.metric("Room to pay vs forecast close",
               fmt(room_to_pay),
-              delta=f"{'within budget' if room_to_pay >= abs(still_to_pay) else 'hold back AP'}",
+              delta="within budget" if room_to_pay >= abs(still_to_pay) else "hold back AP",
               delta_color="normal" if room_to_pay >= abs(still_to_pay) else "inverse")
     c4.metric("Spare AP capacity vs run rate",
               fmt(ap_headroom),
