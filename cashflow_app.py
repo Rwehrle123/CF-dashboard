@@ -351,11 +351,26 @@ with st.sidebar:
     cad_rate = st.number_input("CAD → GBP", value=0.53, min_value=0.20, max_value=1.00, step=0.01, format="%.3f")
     fx_rates = {'EUR': eur_rate, 'USD': usd_rate, 'CAD': cad_rate, 'GBP': 1.0}
     st.divider()
+    st.markdown("**Actual cash positions (GBP equiv)**")
+    st.caption("Enter from the daily cash balance sheet. Overrides Book2 as opening balance.")
+    pos_date = st.date_input("As at date", value=None, help="Date of the cash position snapshot")
+    pos_sht  = st.number_input("SHT (£)",  value=0, min_value=0, max_value=999_999_999, step=1000, format="%d")
+    pos_shgi = st.number_input("SHGI (£)", value=0, min_value=0, max_value=999_999_999, step=1000, format="%d")
+    pos_tmd  = st.number_input("TMD (£)",  value=0, min_value=0, max_value=999_999_999, step=1000, format="%d")
+    pos_total_uk      = pos_sht + pos_tmd
+    pos_total_ireland = pos_shgi
+    pos_total         = pos_sht + pos_shgi + pos_tmd
+    use_actual_pos    = pos_total > 0
+    if use_actual_pos:
+        st.success(f"Total: £{pos_total:,.0f}  ·  UK: £{pos_total_uk:,.0f}  ·  IE: £{pos_total_ireland:,.0f}")
+    else:
+        st.caption("Enter values above to use actual position (currently using Book2)")
+    st.divider()
     st.caption(
         "Account mapping is hard-coded — no upload required.\n"
         "BOA = Ireland entity.\n"
         "Overnight deposits excluded (net zero).\n"
-        "Opening balance from Book2 prior month close.\n"
+        "Opening balance from Book2 prior month close (or actual position above).\n"
         "Interco nets within UK entities.\n"
         "Forecast always extends to Dec 2027 minimum + 12 months rolling beyond latest bank data."
     )
@@ -413,11 +428,22 @@ fc['is_partial'] = fc.apply(lambda r: int(r['Year']) == latest_yr and int(r['Mon
 
 latest_fc = fc[fc['is_actual']].iloc[-1]
 req_now   = float(latest_fc['uk_required'])
-hroom_now = float(latest_fc['uk_headroom'])
+# If actual position entered, use that for headroom — more accurate than Book2
+if use_actual_pos:
+    hroom_now = pos_total_uk - req_now
+else:
+    hroom_now = float(latest_fc['uk_headroom'])
 hpct_now  = hroom_now / req_now if req_now > 0 else 0
 
 # ── Page header / KPIs ────────────────────────────────────────────────────────
 st.title(f"💷 SHG Cash — Latest: {latest_date.strftime('%d %b %Y')}")
+if use_actual_pos:
+    pos_date_str = pos_date.strftime("%d %b %Y") if pos_date else "date not set"
+    st.info(
+        f"📍 **Actual cash position as at {pos_date_str}** — "
+        f"SHT: £{pos_sht:,.0f} · SHGI: £{pos_shgi:,.0f} · TMD: £{pos_tmd:,.0f} · "
+        f"**Total: £{pos_total:,.0f}** · UK: £{pos_total_uk:,.0f} · Ireland: £{pos_total_ireland:,.0f}"
+    )
 
 if hpct_now >= 0.20:
     st.success(f"✅ COMPLIANT — UK headroom {fmt(hroom_now)} ({hpct_now:.0%} of req {fmt(req_now)})")
@@ -840,10 +866,16 @@ with tabs[7]:
     all_weeks    = actual_weeks + fc_weeks
     N_W          = len(all_weeks)
 
-    # Opening balance: last Book2 month close before first actual week
+    # Opening balance: use actual cash position if entered, else fall back to Book2
     first_wk     = actual_weeks[0]
     book2_before = fc[fc.index < first_wk]
-    open_base    = float(book2_before.iloc[-1]['cash_uk']) / 1000 if not book2_before.empty else 0.0
+    book2_open   = float(book2_before.iloc[-1]['cash_uk']) / 1000 if not book2_before.empty else 0.0
+    if use_actual_pos:
+        # Use total UK GBP equiv entered in sidebar (SHT + TMD)
+        # Divide by 1000 as weekly table works in £k
+        open_base = pos_total_uk / 1000
+    else:
+        open_base = book2_open
 
     ROW_SPECS = [
         ('DIRECT RECEIPTS', 'DIRECT RECEIPTS',  False),
@@ -1037,17 +1069,22 @@ with tabs[7]:
 
     # ── Closing balance gauges ────────────────────────────────────────────────
     st.caption("Forecast closing balance — 🟢 net inflow week  🟡 positive but below opening  🔴 negative")
-    g_cols = st.columns(min(13, len(fc_weeks)))
-    for fi, wk in enumerate(fc_weeks):
-        i  = fi + n_actuals
-        cl = closes[i]; op = opens[i]
-        signal = "🟢" if cl > op else ("🟡" if cl > 0 else "🔴")
-        with g_cols[fi]:
-            st.metric(
-                label=wk.strftime('%d %b'),
-                value=f"£{cl:,.0f}k",
-                delta=f"open: £{op:,.0f}k · {signal}",
-                delta_color="off")
+    # Show first 13 forecast weeks in gauges (cap at 13 columns for readability)
+    gauge_weeks = fc_weeks[:13]
+    n_gauges = len(gauge_weeks)
+    if n_gauges > 0:
+        g_cols = st.columns(n_gauges)
+        for fi, wk in enumerate(gauge_weeks):
+            i  = fi + n_actuals
+            if i >= len(closes): continue
+            cl = closes[i]; op = opens[i]
+            signal = "🟢" if cl > op else ("🟡" if cl > 0 else "🔴")
+            with g_cols[fi]:
+                st.metric(
+                    label=wk.strftime('%d %b'),
+                    value=f"£{cl:,.0f}k",
+                    delta=f"open: £{op:,.0f}k · {signal}",
+                    delta_color="off")
 
     # ── Export ────────────────────────────────────────────────────────────────
     st.divider()
