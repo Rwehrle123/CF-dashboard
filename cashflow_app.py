@@ -288,14 +288,22 @@ def build_weekly_forecast(weekly, od_weekly, n_fc=13, fx_rates=None):
     forecast['INTERCO']     = [0] * n_fc   # blank — net zero assumed
     forecast['OD_INTEREST'] = [11000] * n_fc
 
-    # Payroll cycle detection
+    # Payroll cycle detection — with NaN guards throughout
+    large = -250000; small = -30000; days_since = 21   # safe defaults
     if 'PAYROLL' in weekly.columns:
         pay_s = weekly['PAYROLL'].replace(0, np.nan).dropna()
-        large = float(pay_s[pay_s < pay_s.median() * 2].median()) if len(pay_s) > 0 else -250000
-        small = float(pay_s[pay_s >= pay_s.median()].median()) if len(pay_s[pay_s >= pay_s.median()]) > 0 else -30000
-        days_since = (last_date - pay_s.index.max()).days
-    else:
-        large = -250000; small = -30000; days_since = 21
+        if len(pay_s) > 0:
+            med = pay_s.median()
+            if pd.notna(med) and med != 0:
+                large_s = pay_s[pay_s < med * 2]
+                small_s = pay_s[pay_s >= med]
+                large_med = large_s.median()
+                small_med = small_s.median()
+                if pd.notna(large_med): large = float(large_med)
+                if pd.notna(small_med) and len(small_s) > 0: small = float(small_med)
+            last_pay_idx = pay_s.index.max()
+            if pd.notna(last_pay_idx):
+                days_since = int((last_date - last_pay_idx).days)
 
     pay_fc = []
     for fw in fc_weeks:
