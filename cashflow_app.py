@@ -365,6 +365,17 @@ with st.sidebar:
         st.success(f"Total: £{pos_total:,.0f}  ·  UK: £{pos_total_uk:,.0f}  ·  IE: £{pos_total_ireland:,.0f}")
     else:
         st.caption("Enter values above to use actual position (currently using Book2)")
+    if use_actual_pos:
+        st.divider()
+        st.markdown("**Remaining flows adjustment**")
+        st.caption("Adjust remaining month flows vs prior year implied. 0% = follow LY exactly.")
+        adj_receipts = st.slider("Receipts vs LY remaining (%)", -50, 50, 0, 5,
+                                  help="Positive = collecting more than LY pace, negative = less")
+        adj_payments = st.slider("AP payments vs LY remaining (%)", -50, 50, 0, 5,
+                                  help="Negative = holding back payments vs LY, positive = paying more")
+    else:
+        adj_receipts = 0
+        adj_payments = 0
     st.divider()
     st.caption(
         "Account mapping is hard-coded — no upload required.\n"
@@ -455,36 +466,51 @@ fc_me_tot = float(latest_fc['total_cash'])
 kpi_client_mon = float(latest_fc['client_money'])
 
 if use_actual_pos and pos_date is not None:
-    # Work out remaining days in current month from pos_date
     import calendar
     days_in_month  = calendar.monthrange(pos_date.year, pos_date.month)[1]
     days_elapsed   = pos_date.day
     days_remaining = days_in_month - days_elapsed
-    frac_remaining = days_remaining / days_in_month if days_in_month > 0 else 0
 
-    # Estimate remaining flows this month using prior year same month as proxy
     yr_ly = latest_yr - 1
     mn_ly = latest_mn
+
+    # Prior year full month flows
     ly_uk_in  = sum(safe_get(uk_in_spec,  yr_ly, mn_ly, c) for c in KEY_INFLOW  if c in uk_in_spec.columns)
     ly_uk_out = sum(safe_get(uk_out_spec, yr_ly, mn_ly, c) for c in KEY_OUTFLOW if c in uk_out_spec.columns)
     ly_ie_in  = sum(safe_get(ie_in_spec,  yr_ly, mn_ly, c) for c in KEY_INFLOW  if c in ie_in_spec.columns)
     ly_ie_out = sum(safe_get(ie_out_spec, yr_ly, mn_ly, c) for c in KEY_OUTFLOW if c in ie_out_spec.columns)
 
-    # Remaining expected flows = prior year full month × fraction of month left
-    rem_uk_in  = ly_uk_in  * frac_remaining
-    rem_uk_out = ly_uk_out * frac_remaining   # negative
-    rem_ie_in  = ly_ie_in  * frac_remaining
-    rem_ie_out = ly_ie_out * frac_remaining   # negative
+    # Actual-to-date flows this month from bank data
+    act_uk_in_mtd  = safe_entity(entity_m, latest_yr, latest_mn, 'UK',      'inflow')
+    act_uk_out_mtd = safe_entity(entity_m, latest_yr, latest_mn, 'UK',      'outflow')  # negative
+    act_ie_in_mtd  = safe_entity(entity_m, latest_yr, latest_mn, 'Ireland', 'inflow')
+    act_ie_out_mtd = safe_entity(entity_m, latest_yr, latest_mn, 'Ireland', 'outflow')  # negative
+
+    # Implied remaining = LY full month minus what's already happened this month
+    # Clamped at zero — can't have negative remaining (if already exceeded LY, assume nothing left)
+    raw_rem_uk_in  = max(0, ly_uk_in  - act_uk_in_mtd)
+    raw_rem_uk_out = min(0, ly_uk_out - act_uk_out_mtd)  # keep negative
+    raw_rem_ie_in  = max(0, ly_ie_in  - act_ie_in_mtd)
+    raw_rem_ie_out = min(0, ly_ie_out - act_ie_out_mtd)
+
+    # Apply sidebar adjustment sliders
+    rem_uk_in  = raw_rem_uk_in  * (1 + adj_receipts / 100)
+    rem_uk_out = raw_rem_uk_out * (1 + adj_payments / 100)
+    rem_ie_in  = raw_rem_ie_in  * (1 + adj_receipts / 100)
+    rem_ie_out = raw_rem_ie_out * (1 + adj_payments / 100)
 
     # Forecast month-end = actual snapshot + remaining expected flows
     kpi_uk_cash    = pos_total_uk      + rem_uk_in + rem_uk_out
     kpi_ie_cash    = pos_total_ireland + rem_ie_in + rem_ie_out
     kpi_total_cash = kpi_uk_cash + kpi_ie_cash
 
-    # Still to collect / still to pay (remaining in month, UK only)
     still_to_collect = rem_uk_in
     still_to_pay     = rem_uk_out  # negative
-    kpi_subtitle     = f"Forecast {pd.Timestamp(latest_yr, latest_mn, days_in_month).strftime('%d %b')} · {days_remaining}d remaining"
+    adj_note = ""
+    if adj_receipts != 0: adj_note += f" · receipts {adj_receipts:+d}% vs LY"
+    if adj_payments != 0: adj_note += f" · AP {adj_payments:+d}% vs LY"
+    kpi_subtitle = (f"Forecast {pd.Timestamp(latest_yr, latest_mn, days_in_month).strftime('%d %b')} · "
+                    f"{days_remaining}d remaining · LY implied{adj_note}")
 else:
     # No actual position — use Book2 as-is
     kpi_uk_cash      = fc_me_uk
