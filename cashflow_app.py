@@ -583,20 +583,51 @@ k[5].metric("UK Headroom (fcst m/e)",  fmt(hroom_now),
             delta_color="normal" if hroom_now >= 0 else "inverse")
 
 if use_actual_pos and still_to_collect is not None and room_to_pay is not None:
+    # ── AP payment room — clear action box ───────────────────────────────────
+    ap_over = room_to_pay < 0
+    ap_tight = (not ap_over) and ap_headroom < 0
+    ap_ok    = ap_headroom >= 0
+
+    if ap_over:
+        st.error(
+            f"🚨 **AP payments must be reduced this month.** "
+            f"At current pace you will miss the forecast close by **{fmt(abs(room_to_pay))}**. "
+            f"Hold back at least **{fmt(abs(room_to_pay))}** of AP before month-end."
+        )
+    elif ap_tight:
+        st.warning(
+            f"⚠️ **AP payments running slightly hot.** "
+            f"You have room to pay **{fmt(room_to_pay)}** total over the remaining {days_remaining} days, "
+            f"but your current run rate implies **{fmt(abs(still_to_pay))}** — "
+            f"reduce AP by **{fmt(abs(ap_headroom))}** to hit forecast."
+        )
+    else:
+        st.success(
+            f"✅ **AP payments on track.** "
+            f"Room to pay **{fmt(room_to_pay)}** over remaining {days_remaining} days · "
+            f"current run rate **{fmt(abs(still_to_pay))}** · "
+            f"spare capacity **{fmt(ap_headroom)}**."
+        )
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric(f"Expected receipts (remaining {days_remaining}d)",
-              fmt(still_to_collect),
-              delta="4-week run rate basis", delta_color="off")
-    c2.metric(f"AP run rate (remaining {days_remaining}d)",
-              fmt(abs(still_to_pay)),
-              delta="4-week run rate basis", delta_color="off")
-    c3.metric("Room to pay vs forecast close",
-              fmt(room_to_pay),
-              delta="within budget" if room_to_pay >= abs(still_to_pay) else "hold back AP",
-              delta_color="normal" if room_to_pay >= abs(still_to_pay) else "inverse")
-    c4.metric("Spare AP capacity vs run rate",
-              fmt(ap_headroom),
-              delta_color="normal" if ap_headroom >= 0 else "inverse")
+    c1.metric(
+        f"Expected receipts · {days_remaining}d left",
+        fmt(still_to_collect),
+        delta="4-week rolling average", delta_color="off")
+    c2.metric(
+        f"AP run rate · {days_remaining}d left",
+        fmt(abs(still_to_pay)),
+        delta="4-week rolling average", delta_color="off")
+    c3.metric(
+        "Total AP room to month-end",
+        fmt(room_to_pay),
+        delta=f"= actual UK + receipts − forecast close",
+        delta_color="off")
+    c4.metric(
+        "Spare capacity vs run rate",
+        fmt(ap_headroom),
+        delta="release AP" if ap_ok else "hold back AP",
+        delta_color="normal" if ap_ok else "inverse")
 
 st.divider()
 
@@ -786,12 +817,19 @@ with tabs[4]:
     st.caption("Ireland entities — like-for-like month comparison.")
     ie_in_cats  = [c for c in KEY_INFLOW  if c in ie_in_spec.columns]
     ie_out_cats = [c for c in KEY_OUTFLOW if c in ie_out_spec.columns]
-    if ie_in_cats:
-        st.markdown("**Inflows**")
-        build_yoy_table(ie_in_spec, ie_out_spec, ie_in_cats, False, "Ireland")
-    if ie_out_cats:
-        st.markdown("**Outflows**")
-        build_yoy_table(ie_in_spec, ie_out_spec, ie_out_cats, True, "Ireland")
+    ie_sub = st.tabs(["📥 Ireland Inflow YoY", "📤 Ireland Outflow YoY"])
+    with ie_sub[0]:
+        if ie_in_cats:
+            st.caption("Inflows only. Green YoY = growing vs prior year. Red = declining.")
+            build_yoy_table(ie_in_spec, ie_out_spec, ie_in_cats, False, "Ireland")
+        else:
+            st.info("No Ireland inflow data available.")
+    with ie_sub[1]:
+        if ie_out_cats:
+            st.caption("Outflows shown as positive values. Red YoY = running above prior year (review payments).")
+            build_yoy_table(ie_in_spec, ie_out_spec, ie_out_cats, True, "Ireland")
+        else:
+            st.info("No Ireland outflow data available.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
