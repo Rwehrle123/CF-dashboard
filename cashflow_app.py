@@ -843,25 +843,84 @@ with tabs[4]:
         while mn > 12: mn -= 12; yr += 1
         focus_months.append((yr, mn))
 
+    # ── Build weekly outlook month-end closes for this tab ────────────────────
+    # Replicate the weekly close chain using the same logic as the weekly tab
+    # so the 3-month focus uses the OUTLOOK close (not just Book2) as opening balance
+    _n_act   = 4
+    _act_wks = weekly_raw.index[-_n_act:].tolist()
+    _fc_wks  = fc_weeks  # already computed
+    _all_wks = _act_wks + _fc_wks
+    _N       = len(_all_wks)
+
+    # Build simplified net per week (core rows only, no overrides — just baseline)
+    _CORE_IN  = ['DIRECT RECEIPTS','AGENT RECEIPTS','FD RECEIPT','TUI RECEIPT']
+    _CORE_OUT = ['AP COGS','AP OVH','PAYROLL','TAX','FLIGHT COSTS']
+
+    def _wk_val(spec, wk, i):
+        if i < _n_act:
+            return float(weekly_raw.loc[wk, spec]) / 1000 if spec in weekly_raw.columns and wk in weekly_raw.index else 0.0
+        else:
+            return fc_base.get(spec, [0]*13)[i - _n_act] / 1000 if spec in fc_base else 0.0
+
+    _wk_net = []
+    for _i, _wk in enumerate(_all_wks):
+        _net = sum(_wk_val(s, _wk, _i) for s in _CORE_IN + _CORE_OUT)
+        _wk_net.append(_net)
+
+    # Apply adj_receipts / adj_payments sliders
+    for _i in range(_n_act, _N):
+        _wk_net[_i] = (
+            sum(_wk_val(s, _all_wks[_i], _i) * (1 + adj_receipts/100) for s in _CORE_IN) +
+            sum(_wk_val(s, _all_wks[_i], _i) * (1 + adj_payments/100) for s in ['AP COGS','AP OVH']) +
+            sum(_wk_val(s, _all_wks[_i], _i) for s in ['PAYROLL','TAX','FLIGHT COSTS'])
+        )
+
+    # Chain closes from actual opening
+    _open0    = (pos_total_uk / 1000) if use_actual_pos else (
+                float(fc[fc.index < _act_wks[0]].iloc[-1]['cash_uk']) / 1000
+                if not fc[fc.index < _act_wks[0]].empty else 0.0)
+    _closes_wk = [0.0] * _N
+    _closes_wk[0] = _open0 + _wk_net[0]
+    for _i in range(1, _N):
+        _closes_wk[_i] = _closes_wk[_i-1] + _wk_net[_i]
+
+    # Month-end close from weekly outlook = last week close in each month
+    def _wk_outlook_month_close(yr, mn):
+        """Return the weekly-outlook closing balance (£) at end of given month."""
+        wks_in_mn = [(i, w) for i, w in enumerate(_all_wks) if w.year == yr and w.month == mn]
+        if not wks_in_mn: return None
+        last_i = max(wks_in_mn, key=lambda x: x[0])[0]
+        return _closes_wk[last_i] * 1000  # back to £
+
     st.caption(
         f"Bank data to **{latest_date.strftime('%d %b %Y')}**. "
         f"Current month ({MN[latest_mn]} {latest_yr}) + next 2. "
-        f"AP limits to hit forecast closing cash. Prior year same month = expected run rate."
+        f"**AP capacity uses weekly outlook close as opening** — reconciled with Book2 target."
     )
     cols = st.columns(3)
     for ci, (fyr, fmn) in enumerate(focus_months):
         fc_row = fc[(fc['Year'] == fyr) & (fc['Month'] == fmn)]
         if fc_row.empty:
             with cols[ci]: st.info(f"{MN[fmn]} {fyr} — no forecast data"); continue
-        fc_row    = fc_row.iloc[0]
-        is_part   = (fyr == latest_yr and fmn == latest_mn)
-        prev_mn, prev_yr = (fmn-1, fyr) if fmn > 1 else (12, fyr-1)
-        prev_fc   = fc[(fc['Year'] == prev_yr) & (fc['Month'] == prev_mn)]
-        open_cash = float(prev_fc.iloc[0]['cash_uk']) if not prev_fc.empty else float(fc_row['cash_uk'])
-        fc_close  = float(fc_row['cash_uk'])
-        uk_req    = float(fc_row['uk_required'])
-        headroom  = float(fc_row['uk_headroom'])
-        hpct      = headroom / uk_req if uk_req > 0 else 0
+        fc_row   = fc_row.iloc[0]
+        is_part  = (fyr == latest_yr and fmn == latest_mn)
+
+        # Opening balance: use weekly outlook end of prior month if available
+        prev_mn_3, prev_yr_3 = (fmn-1, fyr) if fmn > 1 else (12, fyr-1)
+        wk_open = _wk_outlook_month_close(prev_yr_3, prev_mn_3)
+        prev_fc  = fc[(fc['Year'] == prev_yr_3) & (fc['Month'] == prev_mn_3)]
+        book2_open = float(prev_fc.iloc[0]['cash_uk']) if not prev_fc.empty else float(fc_row['cash_uk'])
+        open_cash  = wk_open if wk_open is not None else book2_open
+
+        # Book2 targets
+        fc_close   = float(fc_row['cash_uk'])
+        uk_req     = float(fc_row['uk_required'])
+        headroom   = float(fc_row['uk_headroom'])
+        hpct       = headroom / uk_req if uk_req > 0 else 0
+
+        # Weekly outlook close for THIS month
+        wk_close_this   = _wk_outlook_month_close(fyr, fmn)
+        wk_headroom     = (wk_close_this - uk_req) if wk_close_this is not None else None
         # ── Category definitions — explicit, no FX, no interco, no sweep ───────
         INFLOW_CORE  = ['AGENT RECEIPTS', 'FD RECEIPT', 'DIRECT RECEIPTS']
         # Fixed outflows: things that happen regardless and can't be deferred
@@ -935,15 +994,28 @@ with tabs[4]:
                     f"{rem} days / ~{weeks_rem:.1f} weeks remaining**"
                 )
 
-            # ── Cash snapshot ─────────────────────────────────────────────────
+            # ── Cash position — Book2 vs weekly outlook ──────────────────────
             st.markdown("**Cash position**")
+            wk_cl_fmt  = fmt(wk_close_this)  if wk_close_this  is not None else "—"
+            wk_hr_fmt  = fmt(wk_headroom)    if wk_headroom    is not None else "—"
+            wk_hr_pct  = f"({wk_headroom/uk_req:.0%})" if wk_headroom is not None and uk_req > 0 else ""
+            var_close  = (wk_close_this - fc_close) if wk_close_this is not None else None
+            var_fmt    = (f"**{'+' if var_close>=0 else ''}{fmt(var_close)}**"
+                         if var_close is not None else "—")
             st.markdown(
-                "| | |\n|---|---|\n"
-                f"| Opening balance | {fmt(open_cash)} |\n"
-                f"| Forecast close | **{fmt(fc_close)}** |\n"
-                f"| UK required | {fmt(uk_req)} |\n"
-                f"| Headroom | **{fmt(headroom)}** ({hpct:.0%}) |"
+                "| | Book2 target | Weekly outlook |\n"
+                "|---|---|---|\n"
+                f"| Opening balance | {fmt(book2_open)} | **{fmt(open_cash)}** |\n"
+                f"| Month-end close | {fmt(fc_close)} | **{wk_cl_fmt}** |\n"
+                f"| UK required | {fmt(uk_req)} | {fmt(uk_req)} |\n"
+                f"| Headroom | {fmt(headroom)} ({hpct:.0%}) | **{wk_hr_fmt}** {wk_hr_pct} |\n"
+                f"| Variance vs Book2 | | {var_fmt} |"
             )
+            if var_close is not None and var_close < -500000:
+                st.error(f"⚠️ Weekly outlook {fmt(abs(var_close))} **below** Book2 target — "
+                         f"adjust AP or receipts to close the gap")
+            elif var_close is not None and var_close > 500000:
+                st.success(f"✅ Weekly outlook {fmt(var_close)} **ahead** of Book2 target")
 
             # ── Receipts ──────────────────────────────────────────────────────
             st.markdown("**Expected receipts** (Direct + Agent + FD, LY basis)")
