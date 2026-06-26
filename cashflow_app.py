@@ -1110,13 +1110,20 @@ with tabs[5]:
             name='Prior year same month',
             line=dict(color=AMBER, width=2, dash='dot'),
             mode='lines+markers', marker=dict(size=4), connectgaps=False))
-        # Boundary line
+        # Boundary line — use shape + annotation separately (Plotly 6 compatibility)
         last_act_lbl = [l for l, a in zip(all_labels_c, all_is_act_c) if a]
         if last_act_lbl:
-            fig_or.add_vline(x=last_act_lbl[-1], line_color='rgba(0,0,0,0.25)',
-                             line_dash='dash', line_width=1,
-                             annotation_text='← actual | forecast →',
-                             annotation_position='top')
+            x_idx = all_labels_c.index(last_act_lbl[-1])
+            fig_or.add_shape(type='line',
+                             xref='x', yref='paper',
+                             x0=last_act_lbl[-1], x1=last_act_lbl[-1],
+                             y0=0, y1=1,
+                             line=dict(color='rgba(0,0,0,0.25)', dash='dash', width=1))
+            fig_or.add_annotation(
+                x=last_act_lbl[-1], y=1, xref='x', yref='paper',
+                text='← actual | forecast →',
+                showarrow=False, font=dict(size=9, color='rgba(0,0,0,0.4)'),
+                xanchor='left', yanchor='top')
         fig_or.add_hline(y=0, line_color='rgba(0,0,0,0.2)', line_width=0.8)
         fig_or.update_layout(
             height=320, plot_bgcolor='white', paper_bgcolor='white',
