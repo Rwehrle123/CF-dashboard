@@ -1092,6 +1092,12 @@ with tabs[4]:
         f"Weekly outlook reflects current overrides and sliders — same data as 4+13 tab."
     )
 
+    with st.expander("🔍 Debug — weekly chain (remove before handoff)", expanded=False):
+        st.caption(f"open_base: £{open_base:,.0f}k  |  closes[0]: £{closes[0]:,.0f}k  |  closes[-1]: £{closes[-1]:,.0f}k  |  N_W: {N_W}")
+        for fyr2, fmn2 in focus_months:
+            wk_c = shared_month_end_close(fyr2, fmn2)
+            st.caption(f"  {MN[fmn2]} {fyr2} close: {fmt(wk_c) if wk_c else 'None'}")
+
     cols = st.columns(3)
     for ci, (fyr, fmn) in enumerate(focus_months):
         fc_row = fc[(fc['Year'] == fyr) & (fc['Month'] == fmn)]
@@ -1100,12 +1106,19 @@ with tabs[4]:
         fc_row   = fc_row.iloc[0]
         is_part  = (fyr == latest_yr and fmn == latest_mn)
 
-        # Opening balance: weekly outlook end of prior month (includes overrides + sliders)
+        # Opening balance:
+        # - Current month (partial): use actual pos if entered, else weekly chain start
+        # - Future months: use weekly outlook close of prior month (tracks overrides)
         prev_mn_3, prev_yr_3 = (fmn-1, fyr) if fmn > 1 else (12, fyr-1)
-        wk_open    = shared_month_end_close(prev_yr_3, prev_mn_3)
         prev_fc    = fc[(fc['Year'] == prev_yr_3) & (fc['Month'] == prev_mn_3)]
         book2_open = float(prev_fc.iloc[0]['cash_uk']) if not prev_fc.empty else float(fc_row['cash_uk'])
-        open_cash  = wk_open if wk_open is not None else book2_open
+
+        if is_part and use_actual_pos:
+            # Current month: actual cash position entered in sidebar is the opening
+            open_cash = pos_total_uk   # £
+        else:
+            wk_open   = shared_month_end_close(prev_yr_3, prev_mn_3)
+            open_cash = wk_open if wk_open is not None else book2_open
 
         # Forecast file targets — UK cash and total (UK + Ireland)
         fc_uk_close  = float(fc_row['cash_uk'])
@@ -1146,15 +1159,16 @@ with tabs[4]:
             rem       = days_in - latest_day
             frac_rem  = rem / days_in
             weeks_rem = rem / 7.0
-            # Remaining inflows = LY full month × fraction remaining × slider adjustment
+            # Remaining inflows (LY pro-rated × slider) — what we still expect to collect
             rem_in    = ly_inflow * frac_rem * (1 + adj_receipts / 100)
-            # Remaining fixed outflows (flight, payroll, tax — not AP)
+            # Remaining fixed outflows pro-rated
             rem_fixed = ly_fixed  * frac_rem
             # AP already paid this month
             ap_mtd    = (abs(safe_get(uk_out_spec, fyr, fmn, 'AP COGS')) +
                          abs(safe_get(uk_out_spec, fyr, fmn, 'AP OVH')))
-            # Total AP budget = opening + expected remaining inflows − forecast close − remaining fixed
-            # AP slider adjusts the AP run rate benchmark (not the budget — budget is cash-driven)
+            # Total AP budget:
+            # If actual pos entered: actual cash now + remaining inflows − target close − remaining fixed
+            # This correctly uses today's real cash as the starting point
             total_ap_budget = open_cash + rem_in - fc_close - rem_fixed
             allow_ap_remain = max(0, total_ap_budget - ap_mtd)
             allow_ap_per_wk = allow_ap_remain / max(weeks_rem, 0.5)
