@@ -1293,21 +1293,29 @@ with tabs[6]:
         ('FD RECEIPT',      'FD RECEIPT',        False),
         ('CUSTOMER REFUND', 'CUSTOMER REFUNDS',  False),
         ('TUI RECEIPT',     'TUI RECEIPT',       False),
-        ('OTHER RECEIPT',   'OTHER RECEIPTS',    False),
-        ('FX TRADE IN',     'FX TRADE IN',       False),
-        ('INTERCO (net)',   'INTERCO',           True),   # blank in forecast
+        ('OTHER RECEIPT',   'OTHER RECEIPTS',    True),  # blank — unpredictable
+        ('FX TRADE IN',     'FX TRADE IN',       True),  # blank — treasury/lumpy
+        ('INTERCO (net)',   'INTERCO',           True),  # blank — net zero assumed
         ('OD INTEREST',     '_OD',               False),
         ('AP COGS',         'AP COGS',           False),
         ('AP OVH',          'AP OVH',            False),
         ('PAYROLL',         'PAYROLL',           False),
         ('TAX',             'TAX',               False),
-        ('OTHER CASH OUT',  'OTHER COSTS',       False),
-        ('FX TRADE OUT',    'FX TRADE OUT',      False),
+        ('OTHER CASH OUT',  'OTHER COSTS',       True),  # blank — unpredictable
+        ('FX TRADE OUT',    'FX TRADE OUT',      True),  # blank — treasury/lumpy
         ('FLIGHT COSTS',    'FLIGHT COSTS',      False),
     ]
     RECEIPT_LABELS = ['DIRECT RECEIPTS','AGENT RECEIPTS','FD RECEIPT','CUSTOMER REFUND',
                       'TUI RECEIPT','OTHER RECEIPT','FX TRADE IN','INTERCO (net)','OD INTEREST']
     PAYMENT_LABELS = ['AP COGS','AP OVH','PAYROLL','TAX','OTHER CASH OUT','FX TRADE OUT','FLIGHT COSTS']
+
+    # Rows affected by the sidebar adjustment sliders
+    # (only core receipts and AP — not FX, interco, payroll, flight, tax)
+    SLIDER_RECEIPT_ROWS = {'DIRECT RECEIPTS', 'AGENT RECEIPTS', 'FD RECEIPT', 'TUI RECEIPT'}
+    SLIDER_AP_ROWS      = {'AP COGS', 'AP OVH'}
+
+    # All forecast weeks — sliders apply across the full 13-week outlook
+    current_month_fc_weeks = set(range(n_actuals, N_W))
 
     data = {}
     for label, spec, blank_fc in ROW_SPECS:
@@ -1334,6 +1342,14 @@ with tabs[6]:
                     v = fc_base.get('PAYROLL', [0]*13)[i - n_actuals] / 1000
                 else:
                     v = fc_base.get(spec, [0]*13)[i - n_actuals] / 1000 if spec else 0.0
+
+                # Apply slider adjustments across all 13 forecast weeks
+                if i in current_month_fc_weeks:
+                    if label in SLIDER_RECEIPT_ROWS and adj_receipts != 0:
+                        v = v * (1 + adj_receipts / 100)
+                    elif label in SLIDER_AP_ROWS and adj_payments != 0:
+                        v = v * (1 + adj_payments / 100)
+
             row.append(round(v, 1))
         data[label] = row
 
@@ -1349,7 +1365,9 @@ with tabs[6]:
 
     # ── Override expander ─────────────────────────────────────────────────────
     ovr_labels = ['AP COGS','AP OVH','PAYROLL','FD RECEIPT','AGENT RECEIPTS',
-                  'FX TRADE IN','FX TRADE OUT','FLIGHT COSTS','INTERCO (net)']
+                  'FX TRADE IN','FX TRADE OUT','FLIGHT COSTS','INTERCO (net)',
+                  'OTHER RECEIPT','OTHER CASH OUT']
+    # ⬜ = blank by default in forecast (FX, interco, other — enter only if known)
 
     _, col_btn = st.columns([8, 1])
     with col_btn:
@@ -1374,19 +1392,28 @@ with tabs[6]:
                     ov_key  = f"{label}_{i}"
                     is_lk   = label in WEEKLY_LOCK
                     is_ico  = 'INTERCO' in label
-                    fc_def  = fc_base.get('PAYROLL', [0]*13)[fi] if is_lk else \
-                              (fc_base.get(spec, [0]*13)[fi] if spec in fc_base else 0.0)
-                    curr    = st.session_state.weekly_ov.get(ov_key, fc_def)
-                    hint    = "🔒 " if is_lk else ("🔵 " if is_ico else "")
-                    # Clamp value within min/max bounds — large FX trades can exceed limits
-                    safe_val = float(np.clip(float(curr), -9_999_999.0, 9_999_999.0))
-                    new_v   = st.number_input(
+                    # fc_def: what the forecast would be without override (in £)
+                    # blank_fc rows default to 0; others use fc_base
+                    spec_blank = next((b for l2, s2, b in ROW_SPECS if l2 == label), False)
+                    if spec_blank:
+                        fc_def = 0.0
+                    elif is_lk:
+                        fc_def = float(fc_base.get('PAYROLL', [0]*13)[fi])
+                    else:
+                        fc_def = float(fc_base.get(spec, [0]*13)[fi] if spec in fc_base else 0.0)
+
+                    # Use stored override if exists, else forecast default
+                    curr     = float(st.session_state.weekly_ov.get(ov_key, fc_def))
+                    hint     = "🔒 " if is_lk else ("🔵 " if is_ico else ("⬜ " if spec_blank else ""))
+                    safe_val = float(np.clip(curr, -9_999_999.0, 9_999_999.0))
+                    new_v    = st.number_input(
                         f"{hint}{label}",
                         value=safe_val,
                         min_value=-9_999_999.0, max_value=9_999_999.0,
                         step=1000.0, format="%.0f",
                         key=f"wov_{label}_{fi}")
-                    if abs(new_v - fc_def) > 1:
+                    # Save if different from forecast default (use tolerance of £500)
+                    if abs(new_v - fc_def) > 500:
                         st.session_state.weekly_ov[ov_key] = new_v
                     elif ov_key in st.session_state.weekly_ov:
                         del st.session_state.weekly_ov[ov_key]
