@@ -1092,16 +1092,7 @@ with tabs[4]:
         f"Weekly outlook reflects current overrides and sliders — same data as 4+13 tab."
     )
 
-    with st.expander("🔍 Debug — weekly chain (remove before handoff)", expanded=True):
-        st.markdown(f"""
-**Pre-tab chain values (what the 3-month focus reads):**
-- `use_actual_pos` = **{use_actual_pos}**
-- `pos_total_uk` = **£{pos_total_uk:,.0f}** → open_base = **£{open_base:,.2f}k**
-- `closes[0]` = **£{closes[0]:,.1f}k** | `closes[-1]` = **£{closes[-1]:,.1f}k** | N_W = {N_W}
-""")
-        for fyr2, fmn2 in focus_months:
-            wk_c = shared_month_end_close(fyr2, fmn2)
-            st.markdown(f"- `shared_month_end_close({fyr2},{fmn2})` = **{fmt(wk_c) if wk_c else 'None'}**")
+
 
     cols = st.columns(3)
     for ci, (fyr, fmn) in enumerate(focus_months):
@@ -1217,8 +1208,9 @@ with tabs[4]:
             wk_cl_fmt  = fmt(wk_total_close) if wk_total_close is not None else "—"
             wk_hr_fmt  = fmt(wk_headroom)    if wk_headroom    is not None else "—"
             wk_hr_pct  = f"({wk_headroom/uk_req:.0%})" if wk_headroom is not None and uk_req > 0 else ""
-            # Compare total close: weekly UK + IE forecast close vs total forecast close
-            var_close  = (wk_total_close - fc_close) if wk_total_close is not None else None
+            # Variance: UK weekly chain close vs UK forecast close
+            # Matches 4+13 "Variance vs forecast close" row exactly
+            var_close  = (wk_close_this - fc_uk_close) if wk_close_this is not None else None
             var_fmt    = (f"**{'+' if var_close>=0 else ''}{fmt(var_close)}**"
                          if var_close is not None else "—")
             st.markdown(
@@ -1230,7 +1222,7 @@ with tabs[4]:
                 f"| **Total close** | **{fmt(fc_close)}** | **{wk_cl_fmt}** |\n"
                 f"| UK required | {fmt(uk_req)} | {fmt(uk_req)} |\n"
                 f"| Total headroom | **{fmt(headroom)}** ({hpct:.0%}) | **{wk_hr_fmt}** {wk_hr_pct} |\n"
-                f"| Variance vs fcst | | {var_fmt} |"
+                f"| Variance vs fcst (UK) | | {var_fmt} |"
             )
             if var_close is not None and var_close < -500000:
                 st.error(f"⚠️ Weekly outlook {fmt(abs(var_close))} **below** forecast target — "
@@ -1569,6 +1561,15 @@ with tabs[6]:
 
     # Data, opens, closes computed in shared pre-tab block below tabs definition
 
+    # ── Actual position banner ────────────────────────────────────────────────
+    if use_actual_pos:
+        st.info(
+            f"📍 Opening balance anchored to actual position: "
+            f"SHT £{pos_sht:,.0f} + TMD £{pos_tmd:,.0f} = **UK £{pos_total_uk:,.0f}** "
+            f"(W{actual_weeks[0].isocalendar()[1]} {actual_weeks[0].strftime('%d %b')} opening = "
+            f"**£{open_base:,.0f}k**). "
+            f"Closes chain from this base through {all_weeks[-1].strftime('%b %Y')}."
+        )
 
     # ── Override expander ─────────────────────────────────────────────────────
     ovr_labels = ['AP COGS','AP OVH','PAYROLL','FD RECEIPT','AGENT RECEIPTS',
@@ -1677,8 +1678,8 @@ with tabs[6]:
         if book2_row.empty:
             return None, None, None
         row = book2_row.iloc[0]
-        # Total cash close = UK + Ireland
-        fc_close_k  = (float(row['cash_uk']) + float(row['cash_ireland'])) / 1000
+        # UK cash close only — matches closes[] which is UK-only chain
+        fc_close_k  = float(row['cash_uk']) / 1000
         cm_k        = float(row['client_money'])  / 1000
         headroom_k  = float(row['uk_headroom'])   / 1000
         return fc_close_k, cm_k, headroom_k
@@ -1720,10 +1721,10 @@ with tabs[6]:
             row[wk_hdrs[i]] = vals_fn(i)
         display_rows.append({'_kind': kind, '_label': label, **row})
 
-    dr_me('Forecast file close',   lambda i: fkw_me(b2_fc_close[i]),  'forecast')
+    dr_me('Forecast UK close',      lambda i: fkw_me(b2_fc_close[i]),  'forecast')
     dr_me('Client money',           lambda i: fkw_me(b2_cm[i]),         'forecast')
     dr_me('UK headroom vs req',     lambda i: fkw_me(b2_headroom[i]),   'forecast')
-    dr_me('Variance vs forecast close',lambda i: fkw_var(b2_variance[i]),  'variance')
+    dr_me('Variance vs fcst (UK close)',lambda i: fkw_var(b2_variance[i]),  'variance')
 
     df_display = pd.DataFrame(
         [{k: v for k, v in r.items() if not k.startswith('_')} for r in display_rows]
