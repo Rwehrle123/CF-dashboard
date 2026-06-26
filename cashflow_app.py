@@ -1092,11 +1092,16 @@ with tabs[4]:
         f"Weekly outlook reflects current overrides and sliders — same data as 4+13 tab."
     )
 
-    with st.expander("🔍 Debug — weekly chain (remove before handoff)", expanded=False):
-        st.caption(f"open_base: £{open_base:,.0f}k  |  closes[0]: £{closes[0]:,.0f}k  |  closes[-1]: £{closes[-1]:,.0f}k  |  N_W: {N_W}")
+    with st.expander("🔍 Debug — weekly chain (remove before handoff)", expanded=True):
+        st.markdown(f"""
+**Pre-tab chain values (what the 3-month focus reads):**
+- `use_actual_pos` = **{use_actual_pos}**
+- `pos_total_uk` = **£{pos_total_uk:,.0f}** → open_base = **£{open_base:,.2f}k**
+- `closes[0]` = **£{closes[0]:,.1f}k** | `closes[-1]` = **£{closes[-1]:,.1f}k** | N_W = {N_W}
+""")
         for fyr2, fmn2 in focus_months:
             wk_c = shared_month_end_close(fyr2, fmn2)
-            st.caption(f"  {MN[fmn2]} {fyr2} close: {fmt(wk_c) if wk_c else 'None'}")
+            st.markdown(f"- `shared_month_end_close({fyr2},{fmn2})` = **{fmt(wk_c) if wk_c else 'None'}**")
 
     cols = st.columns(3)
     for ci, (fyr, fmn) in enumerate(focus_months):
