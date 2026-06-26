@@ -664,7 +664,7 @@ st.divider()
 # Computed once here, used by both the Weekly 4+13 tab and 3-Month Focus tab.
 # Includes session state overrides so both tabs see the same adjusted numbers.
 # ══════════════════════════════════════════════════════════════════════════════
-def _build_shared_closes(weekly_raw, fc_weeks, fc_base, fc,
+def _build_shared_closes(weekly_raw, od_weekly, fc_weeks, fc_base, fc,
                           adj_receipts, adj_payments,
                           use_actual_pos, pos_total_uk, latest_mn, latest_yr):
     """Build the weekly closing balance chain, applying overrides and sliders.
@@ -713,7 +713,8 @@ def _build_shared_closes(weekly_raw, fc_weeks, fc_base, fc,
             if i < n_act:
                 spec = label if label != 'OD INTEREST' else None
                 if label == 'OD INTEREST':
-                    v = 0.0  # actuals OD timing too noisy for chain
+                    # Use actual OD net for actuals (same as weekly tab)
+                    v = float(od_weekly.get(wk, 0)) / 1000
                 elif spec and spec in weekly_raw.columns and wk in weekly_raw.index:
                     v = float(weekly_raw.loc[wk, spec]) / 1000
                 else:
@@ -753,24 +754,19 @@ if 'weekly_ov' not in st.session_state:
     st.session_state.weekly_ov = {}
 
 _shared_all_weeks, _shared_closes_k = _build_shared_closes(
-    weekly_raw, fc_weeks, fc_base, fc,
+    weekly_raw, od_weekly, fc_weeks, fc_base, fc,
     adj_receipts, adj_payments,
     use_actual_pos, pos_total_uk, latest_mn, latest_yr)
 
 def shared_month_end_close(yr, mn):
     """Return weekly-outlook closing balance (£) at end of given month.
-    Prefers the authoritative weekly tab chain (session state) if available,
-    falls back to the pre-tab approximation otherwise."""
-    # Use weekly tab's chain if it has been computed this session
-    all_wks_src  = st.session_state.get('_wk_all_weeks', _shared_all_weeks)
-    closes_src   = st.session_state.get('_wk_closes',    _shared_closes_k)
-    wks = [(i, w) for i, w in enumerate(all_wks_src)
+    Uses the pre-tab chain which includes all overrides and sliders.
+    This runs before any tab renders so is always consistent."""
+    wks = [(i, w) for i, w in enumerate(_shared_all_weeks)
            if w.year == yr and w.month == mn]
     if not wks: return None
     last_i = max(wks, key=lambda x: x[0])[0]
-    v = closes_src[last_i]
-    # closes may be in £k (weekly tab) or £k (shared chain) — both are £k
-    return v * 1000   # back to £
+    return _shared_closes_k[last_i] * 1000   # £k → £
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tabs = st.tabs([
@@ -1550,9 +1546,9 @@ with tabs[6]:
         opens[i]  = closes[i-1]
         closes[i] = closes[i-1] + net[i]
 
-    # Store authoritative weekly closes in session state so 3-Month Focus uses same numbers
-    st.session_state['_wk_closes']   = closes      # £k
-    st.session_state['_wk_all_weeks'] = all_weeks
+    # Note: shared_month_end_close uses the pre-tab chain (_shared_closes_k)
+    # which is computed before any tab renders using the same overrides + sliders.
+    # No session state sync needed.
 
     # ── Override expander ─────────────────────────────────────────────────────
     ovr_labels = ['AP COGS','AP OVH','PAYROLL','FD RECEIPT','AGENT RECEIPTS',
