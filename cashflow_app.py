@@ -339,7 +339,7 @@ with st.sidebar:
                                help="Must contain 'Data Sheet' tab")
     st.markdown("**2 · Forecast / client money**")
     fc_file = st.file_uploader("Upload forecast Excel", type=['xlsx'], key='fc',
-                               help="Book2 format — rows: Client money / Cash UK / Cash Ireland")
+                               help="Forecast file format — rows: Client money / Cash UK / Cash Ireland")
     st.divider()
     uk_pct = st.slider("UK cash requirement (%)", 50, 100, 70, 5)
     st.divider()
@@ -351,7 +351,7 @@ with st.sidebar:
     fx_rates = {'EUR': eur_rate, 'USD': usd_rate, 'CAD': cad_rate, 'GBP': 1.0}
     st.divider()
     st.markdown("**Actual cash positions (GBP equiv)**")
-    st.caption("Enter from the daily cash balance sheet. Overrides Book2 as opening balance.")
+    st.caption("Enter from the daily cash balance sheet. Overrides forecast file as opening balance.")
     pos_date = st.date_input("As at date", value=None, help="Date of the cash position snapshot")
     pos_sht  = st.number_input("SHT (£)",  value=0, min_value=0, max_value=999_999_999, step=1000, format="%d")
     pos_shgi = st.number_input("SHGI (£)", value=0, min_value=0, max_value=999_999_999, step=1000, format="%d")
@@ -363,12 +363,12 @@ with st.sidebar:
     if use_actual_pos:
         st.success(f"Total: £{pos_total:,.0f}  ·  UK: £{pos_total_uk:,.0f}  ·  IE: £{pos_total_ireland:,.0f}")
     else:
-        st.caption("Enter values above to use actual position (currently using Book2)")
+        st.caption("Enter values above to use actual position (currently using forecast file)")
     st.divider()
     st.markdown("**Client money override**")
-    st.caption("Override Book2 client money for current month if you have a more accurate figure.")
+    st.caption("Override forecast file client money for current month if you have a more accurate figure.")
     cm_override = st.number_input(
-        "Client money (£) — leave 0 to use Book2",
+        "Client money (£) — leave 0 to use forecast file",
         value=0, min_value=0, max_value=999_999_999, step=100_000, format="%d")
     use_cm_override = cm_override > 0
     if use_cm_override:
@@ -390,7 +390,7 @@ with st.sidebar:
         "Account mapping is hard-coded — no upload required.\n"
         "BOA = Ireland entity.\n"
         "Overnight deposits excluded (net zero).\n"
-        "Opening balance from Book2 prior month close (or actual position above).\n"
+        "Opening balance from forecast file prior month close (or actual position above).\n"
         "Interco nets within UK entities.\n"
         "Forecast always extends to Dec 2027 minimum + 12 months rolling beyond latest bank data."
     )
@@ -399,7 +399,7 @@ if not tx_file or not fc_file:
     st.title("💷 SHG Cash Flow Dashboard")
     c1, c2 = st.columns(2)
     with c1: st.info("📂 Upload **bank transactions** Excel (sidebar)\n`Data Sheet` tab required")
-    with c2: st.info("📂 Upload **forecast / client money** Excel (sidebar)\nBook2 format: rows = Client money / Cash UK / Cash Ireland")
+    with c2: st.info("📂 Upload **forecast / client money** Excel (sidebar)\nForecast file format: rows = Client money / Cash UK / Cash Ireland")
     st.stop()
 
 # ── Load & enrich ─────────────────────────────────────────────────────────────
@@ -550,7 +550,7 @@ else:
     room_to_pay      = None
     ap_headroom      = None
     days_remaining   = 0
-    kpi_subtitle     = f"Book2 forecast {MN[latest_mn]} {latest_yr} month-end"
+    kpi_subtitle     = f"Forecast file forecast {MN[latest_mn]} {latest_yr} month-end"
 
 # Headroom: uses overridden req_now if client money override is set
 hroom_now = kpi_uk_cash - req_now
@@ -576,7 +576,7 @@ k[3].metric("Client Money",
             delta_color="off")
 k[4].metric("UK Required",
             fmt(req_now),
-            delta=f"{uk_pct}% of {'override' if use_cm_override else 'Book2'}",
+            delta=f"{uk_pct}% of {'override' if use_cm_override else 'forecast file'}",
             delta_color="off")
 k[5].metric("UK Headroom (fcst m/e)",  fmt(hroom_now),
             delta=f"{hpct_now:.0%}",
@@ -895,7 +895,7 @@ with tabs[4]:
     st.caption(
         f"Bank data to **{latest_date.strftime('%d %b %Y')}**. "
         f"Current month ({MN[latest_mn]} {latest_yr}) + next 2. "
-        f"**AP capacity uses weekly outlook close as opening** — reconciled with Book2 target."
+        f"**AP capacity uses weekly outlook close as opening** — reconciled with forecast targetarget."
     )
     cols = st.columns(3)
     for ci, (fyr, fmn) in enumerate(focus_months):
@@ -912,13 +912,15 @@ with tabs[4]:
         book2_open = float(prev_fc.iloc[0]['cash_uk']) if not prev_fc.empty else float(fc_row['cash_uk'])
         open_cash  = wk_open if wk_open is not None else book2_open
 
-        # Book2 targets
-        fc_close   = float(fc_row['cash_uk'])
-        uk_req     = float(fc_row['uk_required'])
-        headroom   = float(fc_row['uk_headroom'])
-        hpct       = headroom / uk_req if uk_req > 0 else 0
+        # Forecast file targets — UK cash and total (UK + Ireland)
+        fc_uk_close  = float(fc_row['cash_uk'])
+        fc_ie_close  = float(fc_row['cash_ireland'])
+        fc_close     = fc_uk_close + fc_ie_close   # total cash
+        uk_req       = float(fc_row['uk_required'])
+        headroom     = fc_uk_close - uk_req         # compliance = UK only
+        hpct         = headroom / uk_req if uk_req > 0 else 0
 
-        # Weekly outlook close for THIS month
+        # Weekly outlook close for THIS month (UK only — what we forecast)
         wk_close_this   = _wk_outlook_month_close(fyr, fmn)
         wk_headroom     = (wk_close_this - uk_req) if wk_close_this is not None else None
         # ── Category definitions — explicit, no FX, no interco, no sweep ───────
@@ -994,28 +996,31 @@ with tabs[4]:
                     f"{rem} days / ~{weeks_rem:.1f} weeks remaining**"
                 )
 
-            # ── Cash position — Book2 vs weekly outlook ──────────────────────
+            # ── Cash position — forecast file vs weekly outlook ────────────────
             st.markdown("**Cash position**")
             wk_cl_fmt  = fmt(wk_close_this)  if wk_close_this  is not None else "—"
             wk_hr_fmt  = fmt(wk_headroom)    if wk_headroom    is not None else "—"
             wk_hr_pct  = f"({wk_headroom/uk_req:.0%})" if wk_headroom is not None and uk_req > 0 else ""
-            var_close  = (wk_close_this - fc_close) if wk_close_this is not None else None
+            # Compare weekly UK outlook vs forecast UK close
+            var_close  = (wk_close_this - fc_uk_close) if wk_close_this is not None else None
             var_fmt    = (f"**{'+' if var_close>=0 else ''}{fmt(var_close)}**"
                          if var_close is not None else "—")
             st.markdown(
-                "| | Book2 target | Weekly outlook |\n"
+                "| | Forecast target | Weekly outlook |\n"
                 "|---|---|---|\n"
-                f"| Opening balance | {fmt(book2_open)} | **{fmt(open_cash)}** |\n"
-                f"| Month-end close | {fmt(fc_close)} | **{wk_cl_fmt}** |\n"
+                f"| Opening (UK) | {fmt(book2_open)} | **{fmt(open_cash)}** |\n"
+                f"| UK close | {fmt(fc_uk_close)} | **{wk_cl_fmt}** |\n"
+                f"| Ireland close | {fmt(fc_ie_close)} | — |\n"
+                f"| Total close | **{fmt(fc_close)}** | — |\n"
                 f"| UK required | {fmt(uk_req)} | {fmt(uk_req)} |\n"
-                f"| Headroom | {fmt(headroom)} ({hpct:.0%}) | **{wk_hr_fmt}** {wk_hr_pct} |\n"
-                f"| Variance vs Book2 | | {var_fmt} |"
+                f"| UK headroom | {fmt(headroom)} ({hpct:.0%}) | **{wk_hr_fmt}** {wk_hr_pct} |\n"
+                f"| Variance vs fcst (UK) | | {var_fmt} |"
             )
             if var_close is not None and var_close < -500000:
-                st.error(f"⚠️ Weekly outlook {fmt(abs(var_close))} **below** Book2 target — "
+                st.error(f"⚠️ Weekly outlook {fmt(abs(var_close))} **below** forecast target — "
                          f"adjust AP or receipts to close the gap")
             elif var_close is not None and var_close > 500000:
-                st.success(f"✅ Weekly outlook {fmt(var_close)} **ahead** of Book2 target")
+                st.success(f"✅ Weekly outlook {fmt(var_close)} **ahead** of forecast target")
 
             # ── Receipts ──────────────────────────────────────────────────────
             st.markdown("**Expected receipts** (Direct + Agent + FD, LY basis)")
@@ -1299,7 +1304,7 @@ with tabs[5]:
             if trend_vs_ly > 0.2e6:
                 st.success(f"📈 Running **{fmt(trend_vs_ly)}/month ahead** of prior year on average.")
             if trend_vs_fc > 0.2e6:
-                st.success(f"📈 Running **{fmt(trend_vs_fc)}/month ahead** of Book2 forecast on average.")
+                st.success(f"📈 Running **{fmt(trend_vs_fc)}/month ahead** of Forecast file forecast on average.")
             if not breach_fc.empty and trend_vs_fc > 0:
                 st.info(
                     f"💡 If positive trend continues, forecast breach months could see "
@@ -1312,7 +1317,7 @@ with tabs[5]:
             if trend_vs_ly < -0.2e6:
                 st.error(f"📉 Running **{fmt(abs(trend_vs_ly))}/month below** prior year on average.")
             if trend_vs_fc < -0.2e6:
-                st.error(f"📉 Running **{fmt(abs(trend_vs_fc))}/month below** Book2 forecast.")
+                st.error(f"📉 Running **{fmt(abs(trend_vs_fc))}/month below** Forecast file forecast.")
             if not breach_fc.empty:
                 st.error("🚨 **Forecast breach months:** " + ", ".join(
                     f"{MN[int(r['Month'])]} {int(r['Year'])} ({fmt(r['uk_headroom'])})"
@@ -1532,7 +1537,7 @@ with tabs[6]:
 
     # ── Book2 month-end targets — show in the last week of each calendar month ─
     # For each week column, find if it's the last week whose WeekStart falls in
-    # a given month, then show Book2 forecast close / client money / headroom.
+    # a given month, then show Forecast file forecast close / client money / headroom.
     # Only shown once per month (the week that closes out that month).
 
     def get_book2_for_week(wk):
@@ -1556,7 +1561,7 @@ with tabs[6]:
     b2_fc_close  = []
     b2_cm        = []
     b2_headroom  = []
-    b2_variance  = []   # closing balance (running) minus Book2 month-end target
+    b2_variance  = []   # closing balance (running) minus forecast month-end target
     for i, wk in enumerate(all_weeks):
         fc_c, cm_c, hr_c = get_book2_for_week(wk)
         b2_fc_close.append(fc_c)
@@ -1582,7 +1587,7 @@ with tabs[6]:
     # Add separator then month-end tracking rows
     display_rows.append({'_kind': 'sep', '_label': '', 'Row': '', **{h: '' for h in wk_hdrs}})
     display_rows.append({'_kind': 'header', '_label': 'MONTH-END TRACKING',
-                         'Row': 'MONTH-END TRACKING (Book2)', **{h: '' for h in wk_hdrs}})
+                         'Row': 'MONTH-END TRACKING (Forecast)', **{h: '' for h in wk_hdrs}})
 
     def dr_me(label, vals_fn, kind='forecast'):
         row = {'Row': label}
@@ -1590,10 +1595,10 @@ with tabs[6]:
             row[wk_hdrs[i]] = vals_fn(i)
         display_rows.append({'_kind': kind, '_label': label, **row})
 
-    dr_me('Book2 forecast close',   lambda i: fkw_me(b2_fc_close[i]),  'forecast')
+    dr_me('Forecast file forecast close',   lambda i: fkw_me(b2_fc_close[i]),  'forecast')
     dr_me('Client money',           lambda i: fkw_me(b2_cm[i]),         'forecast')
     dr_me('UK headroom vs req',     lambda i: fkw_me(b2_headroom[i]),   'forecast')
-    dr_me('Variance vs Book2 close',lambda i: fkw_var(b2_variance[i]),  'variance')
+    dr_me('Variance vs forecast close',lambda i: fkw_var(b2_variance[i]),  'variance')
 
     df_display = pd.DataFrame(
         [{k: v for k, v in r.items() if not k.startswith('_')} for r in display_rows]
@@ -1702,7 +1707,7 @@ with tabs[7]:
 | File | What it contains | Format |
 |---|---|---|
 | Bank transactions | Daily transaction-level data for all accounts | Excel — `Data Sheet` tab |
-| Forecast / client money (Book2) | Monthly forecast closing balances + client money | Excel — Row 1: dates, Row 2: client money, Row 3: UK cash, Row 4: Ireland cash |
+| Forecast / client money file | Monthly forecast closing balances + client money | Excel — Row 1: dates, Row 2: client money, Row 3: UK cash, Row 4: Ireland cash |
 
 **Optional sidebar inputs (entered manually each session):**
 - **SHT / SHGI / TMD actual positions** — GBP equivalent from the daily cash balance sheet. Overrides Book2 as the opening balance anchor.
@@ -1745,9 +1750,9 @@ In the forecast, interco defaults to zero (the assumption being that intra-group
     with st.expander("📅 Forecast methodology"):
         st.markdown("""
 **Monthly forecast** (Cash vs Forecast, Compliance tabs):
-- Source: Book2 uploaded each session
+- Source: forecast file uploaded each session
 - Extended automatically to December 2027 minimum, plus 12 rolling months beyond the latest bank data date
-- Missing months beyond Book2 are filled by carrying forward the same month one year prior (seasonal carry-forward)
+- Missing months beyond the forecast file are filled by carrying forward the same month one year prior (seasonal carry-forward)
 
 **Weekly forecast** (4+13 Outlook tab):
 - For each forecast week, the app looks up the same ISO week number from the prior year in the actual bank data
@@ -1763,7 +1768,7 @@ In the forecast, interco defaults to zero (the assumption being that intra-group
         st.markdown("""
 The regulatory requirement is that **70% of client money must be held in UK GBP cash at all times**.
 
-- Client money figure: from Book2 (or overridden in sidebar)
+- Client money figure: from forecast file (or overridden in sidebar)
 - UK required = client money × 70% (percentage adjustable in sidebar)
 - UK headroom = UK cash − UK required
 - Status: ✅ Compliant (headroom ≥ 20% of requirement) · ⚠️ Caution (0–20%) · 🚨 Breach (<0%)
@@ -1791,7 +1796,7 @@ The "hold back vs LY" figure tells you exactly how much less AP to release compa
 
     with st.expander("⚡ Opportunities & Risks"):
         st.markdown("""
-This tab compares **actual monthly net cash flows** against the **implied flow from Book2** (month-on-month change in forecast closing balance).
+This tab compares **actual monthly net cash flows** against the **implied flow from the forecast file** (month-on-month change in forecast closing balance).
 
 A deviation of more than £500k triggers an insight, with reasons identified by comparing actuals to prior year in key categories:
 - FD receipts, FX inflows (inflow drivers)
@@ -1804,7 +1809,7 @@ A deviation of more than £500k triggers an insight, with reasons identified by 
         st.markdown("""
 **Monthly refresh:**
 1. Download latest bank transactions Excel from your banking system
-2. Update Book2 with the latest actual closing balances and forward forecast
+2. Update the forecast file with the latest actual closing balances and forward forecast
 3. Open the app → upload both files via the sidebar
 4. Enter the latest SHT/SHGI/TMD GBP equiv from the daily cash position sheet
 5. Override client money if the month-end estimate has changed
