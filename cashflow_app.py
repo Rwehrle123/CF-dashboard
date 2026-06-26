@@ -2,9 +2,10 @@
 SHG Cash Flow Dashboard — Complete App
 =======================================
 Corrected version:
-- 3-Month Focus and Weekly 4+13 Outlook both use TOTAL CASH (UK + Ireland)
+- Weekly 4+13 Outlook uses TOTAL CASH (UK + Ireland)
+- 3-Month Focus uses the same weekly close chain as the 4+13 Outlook
 - Manual opening balance date must be a Sunday
-- Sunday balance is used as the opening balance for the following Monday week
+- A balance entered as at Sunday is used as the opening balance for the following Monday week
   e.g. balance as at Sunday 21 Jun 2026 drives W26 22/06 opening balance
 
 Run:
@@ -159,7 +160,6 @@ def get_currency(acc):
     if acc == "BOA":
         return "USD"
     return "GBP"
-
 
 # ── Data loading ───────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
@@ -344,20 +344,17 @@ def build_weekly_forecast(weekly, od_weekly, n_fc=13):
 
     return forecast, fc_weeks
 
-
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 💷 SHG Cash Dashboard")
     st.divider()
     st.markdown("**1 · Bank transactions**")
     tx_file = st.file_uploader("Upload bank Excel", type=["xlsx"], key="tx", help="Must contain 'Data Sheet' tab")
-
     st.markdown("**2 · Forecast / client money**")
     fc_file = st.file_uploader("Upload forecast Excel", type=["xlsx"], key="fc", help="Rows: Client money / Cash UK / Cash Ireland")
     st.divider()
 
     uk_pct = st.slider("UK cash requirement (%)", 50, 100, 70, 5)
-
     st.divider()
     st.markdown("**FX budget rates** (£ per 1 foreign unit)")
     eur_rate = st.number_input("EUR → GBP", value=0.86, min_value=0.50, max_value=1.50, step=0.01, format="%.3f")
@@ -373,7 +370,7 @@ with st.sidebar:
         help="Enter the Sunday closing balance date. This becomes the opening balance for the following Monday week."
     )
 
-    if pos_date is not None and pos_date.weekday() != 6:
+    if pos_date is not None and pos_date.weekday() != 6:  # Monday=0, Sunday=6
         st.error("Opening balance date must be a Sunday. The balance will then feed the following Monday week.")
         st.stop()
 
@@ -385,15 +382,11 @@ with st.sidebar:
     pos_total_ireland = pos_shgi
     pos_total = pos_sht + pos_shgi + pos_tmd
     use_actual_pos = pos_total > 0
-
     if use_actual_pos:
         st.success(f"Total: £{pos_total:,.0f} · UK: £{pos_total_uk:,.0f} · IE: £{pos_total_ireland:,.0f}")
         if pos_date is not None:
             opening_week = pd.Timestamp(pos_date) + pd.Timedelta(days=1)
-            st.caption(
-                f"Feeds opening balance for W{opening_week.isocalendar()[1]} "
-                f"{opening_week.strftime('%d/%m/%Y')}"
-            )
+            st.caption(f"Feeds opening balance for W{opening_week.isocalendar()[1]} {opening_week.strftime('%d/%m/%Y')}")
     else:
         st.caption("Enter values above to use actual position.")
 
@@ -408,14 +401,12 @@ with st.sidebar:
     adj_receipts = st.slider("Receipts vs LY remaining (%)", -50, 50, 0, 5)
     adj_payments = st.slider("AP payments vs LY remaining (%)", -50, 50, 0, 5)
 
-
 if not tx_file or not fc_file:
     st.title("💷 SHG Cash Flow Dashboard")
     c1, c2 = st.columns(2)
     c1.info("📂 Upload **bank transactions** Excel in the sidebar. `Data Sheet` tab required.")
     c2.info("📂 Upload **forecast / client money** Excel in the sidebar.")
     st.stop()
-
 
 # ── Load and enrich ───────────────────────────────────────────────────────────
 with st.spinner("Loading data..."):
@@ -435,7 +426,6 @@ with st.spinner("Loading data..."):
     n_fc_dynamic = max(13, int((required_w - last_act_wk).days // 7) + 1)
     fc_base, fc_weeks = build_weekly_forecast(weekly_raw, od_weekly, n_fc=n_fc_dynamic)
 
-
 fc = fc_raw.copy()
 fc["uk_required"] = fc["client_money"] * uk_pct / 100
 fc["uk_headroom"] = fc["cash_uk"] - fc["uk_required"]
@@ -450,10 +440,8 @@ latest_yr = int(latest_date.year)
 latest_mn = int(latest_date.month)
 latest_day = int(latest_date.day)
 
-
 def is_actual(yr, mn):
     return yr < latest_yr or (yr == latest_yr and mn <= latest_mn)
-
 
 fc["is_actual"] = fc.apply(lambda r: is_actual(int(r["Year"]), int(r["Month"])), axis=1)
 fc["is_partial"] = fc.apply(lambda r: int(r["Year"]) == latest_yr and int(r["Month"]) == latest_mn, axis=1)
@@ -479,7 +467,6 @@ if use_actual_pos and pos_date is not None:
     df_op_w["WeekStart"] = df_op_w["PostDate"].dt.to_period("W-SUN").apply(lambda p: p.start_time)
     wk_core_in = df_op_w[df_op_w["TrnSpec"].isin(core_in)].groupby("WeekStart")["inflow"].sum()
     wk_core_out = df_op_w[df_op_w["TrnSpec"].isin(core_out)].groupby("WeekStart")["outflow"].sum()
-
     avg_wk_in = float(wk_core_in.tail(4).mean()) if len(wk_core_in) else 0.0
     avg_wk_out = float(wk_core_out.tail(4).mean()) if len(wk_core_out) else 0.0
 
@@ -502,10 +489,8 @@ hpct_now = hroom_now / req_now if req_now > 0 else 0
 total_hroom_now = kpi_total_cash - req_now
 total_hpct_now = total_hroom_now / req_now if req_now > 0 else 0
 
-
 # ── Header / KPIs ─────────────────────────────────────────────────────────────
 st.title(f"💷 SHG Cash — Latest: {latest_date.strftime('%d %b %Y')}")
-
 if use_actual_pos:
     pos_date_str = pos_date.strftime("%d %b %Y") if pos_date else "date not set"
     st.info(
@@ -531,7 +516,6 @@ k[5].metric("Total Headroom", fmt(total_hroom_now), delta=f"{total_hpct_now:.0%}
 
 st.divider()
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # SHARED WEEKLY 4+13 DATA — TOTAL CASH BASIS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -549,9 +533,7 @@ book2_open = float(book2_before.iloc[-1]["total_cash"]) / 1000 if not book2_befo
 
 manual_open_week = None
 manual_open_idx = None
-
 if use_actual_pos and pos_date is not None:
-    # Sunday closing balance becomes the opening balance for the following Monday week
     manual_open_week = pd.Timestamp(pos_date) + pd.Timedelta(days=1)
     open_base = pos_total / 1000
 else:
@@ -584,13 +566,11 @@ for label, spec, blank_fc in ROW_SPECS:
     row = []
     for i, wk in enumerate(all_weeks):
         ov_key = f"{label}_{i}"
-
         if ov_key in st.session_state.weekly_ov:
             row.append(st.session_state.weekly_ov[ov_key] / 1000)
             continue
 
         is_fc_wk = i >= n_actuals
-
         if not is_fc_wk:
             if spec == "_OD":
                 v = float(od_weekly.get(wk, 0)) / 1000
@@ -600,7 +580,6 @@ for label, spec, blank_fc in ROW_SPECS:
                 v = 0.0
         else:
             fi = i - n_actuals
-
             if blank_fc:
                 v = 0.0
             elif spec == "_OD":
@@ -616,19 +595,15 @@ for label, spec, blank_fc in ROW_SPECS:
                 v *= (1 + adj_payments / 100)
 
         row.append(round(v, 1))
-
     data[label] = row
 
 totR = [sum(data[l][i] for l in RECEIPT_LABELS) for i in range(N_W)]
 totP = [sum(data[l][i] for l in PAYMENT_LABELS) for i in range(N_W)]
 net = [totR[i] + totP[i] for i in range(N_W)]
-
 opens = [0.0] * N_W
 closes = [0.0] * N_W
 
-# Manual Sunday balance anchoring logic:
-# If the user enters a Sunday balance, it is used as the opening balance
-# for the following Monday week, e.g. Sunday 21 Jun 2026 → W26 22/06.
+# If a Sunday manual balance is entered, anchor it to the following Monday week.
 if use_actual_pos and manual_open_week is not None:
     matches = [
         i for i, wk in enumerate(all_weeks)
@@ -637,34 +612,27 @@ if use_actual_pos and manual_open_week is not None:
 
     if matches:
         manual_open_idx = matches[0]
-
-        # Anchor selected week opening balance
         opens[manual_open_idx] = open_base
         closes[manual_open_idx] = opens[manual_open_idx] + net[manual_open_idx]
 
-        # Roll forwards
         for i in range(manual_open_idx + 1, N_W):
             opens[i] = closes[i - 1]
             closes[i] = opens[i] + net[i]
 
-        # Roll backwards for prior displayed weeks
         for i in range(manual_open_idx - 1, -1, -1):
             closes[i] = opens[i + 1]
             opens[i] = closes[i] - net[i]
-
     else:
         st.warning(
             f"Manual opening balance date maps to week commencing "
             f"{manual_open_week.strftime('%d %b %Y')}, but that week is not currently shown "
             f"in the 4+13 table. Falling back to the first displayed week."
         )
-
         opens[0] = open_base
         closes[0] = opens[0] + net[0]
         for i in range(1, N_W):
             opens[i] = closes[i - 1]
             closes[i] = opens[i] + net[i]
-
 else:
     opens[0] = open_base
     closes[0] = opens[0] + net[0]
@@ -680,7 +648,6 @@ def shared_month_end_close(yr, mn):
         return None
     last_i = max(wks, key=lambda x: x[0])[0]
     return closes[last_i] * 1000
-
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
 tabs = st.tabs([
@@ -698,7 +665,6 @@ fc_chart = fc.copy()
 fc_chart["label"] = fc_chart["Month"].map(MN) + " " + fc_chart["Year"].astype(str)
 labels = fc_chart["label"].tolist()
 
-
 def split_act_fc(series):
     act = series.where(fc_chart["is_actual"] & ~fc_chart["is_partial"])
     fc_s = series.where(~fc_chart["is_actual"] | fc_chart["is_partial"])
@@ -707,13 +673,11 @@ def split_act_fc(series):
         fc_s.loc[idx] = series.loc[idx]
     return act.tolist(), fc_s.tolist()
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — Cash vs Forecast
 # ══════════════════════════════════════════════════════════════════════════════
 with tabs[0]:
     fig = go.Figure()
-
     for series, name, color, width in [
         (fc["cash_uk"], "UK cash", BLUE, 2.5),
         (fc["total_cash"], "Total cash", GREEN, 2.5),
@@ -721,41 +685,11 @@ with tabs[0]:
         (fc["total_headroom"], "Total headroom", LGREEN, 1.5),
     ]:
         act, fcast = split_act_fc(series / 1e6)
-        fig.add_trace(go.Scatter(
-            x=labels,
-            y=act,
-            name=f"{name} (actual)",
-            line=dict(color=color, width=width),
-            mode="lines+markers",
-            marker=dict(size=3),
-        ))
-        fig.add_trace(go.Scatter(
-            x=labels,
-            y=fcast,
-            name=f"{name} (forecast)",
-            line=dict(color=color, width=max(1, width - 0.5), dash="dot"),
-            mode="lines+markers",
-            marker=dict(size=2, symbol="circle-open"),
-        ))
-
-    fig.add_trace(go.Scatter(
-        x=labels,
-        y=(fc["uk_required"] / 1e6).tolist(),
-        name="UK required",
-        line=dict(color=RED, dash="dash", width=1.5),
-        mode="lines",
-    ))
-
+        fig.add_trace(go.Scatter(x=labels, y=act, name=f"{name} (actual)", line=dict(color=color, width=width), mode="lines+markers", marker=dict(size=3)))
+        fig.add_trace(go.Scatter(x=labels, y=fcast, name=f"{name} (forecast)", line=dict(color=color, width=max(1, width-0.5), dash="dot"), mode="lines+markers", marker=dict(size=2, symbol="circle-open")))
+    fig.add_trace(go.Scatter(x=labels, y=(fc["uk_required"] / 1e6).tolist(), name="UK required", line=dict(color=RED, dash="dash", width=1.5), mode="lines"))
     fig.add_hline(y=0, line_color="rgba(0,0,0,0.15)", line_width=0.5)
-    fig.update_layout(
-        height=380,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        yaxis=dict(tickformat=",.1f", ticksuffix="m", gridcolor=GREY, title="£m"),
-        xaxis=dict(tickangle=45),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)),
-        margin=dict(l=0, r=0, t=30, b=0),
-    )
+    fig.update_layout(height=380, plot_bgcolor="white", paper_bgcolor="white", yaxis=dict(tickformat=",.1f", ticksuffix="m", gridcolor=GREY, title="£m"), xaxis=dict(tickangle=45), legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)), margin=dict(l=0, r=0, t=30, b=0))
     st.plotly_chart(fig, use_container_width=True)
 
     rows = []
@@ -777,9 +711,7 @@ with tabs[0]:
             "Total Headroom %": f"{thp:.0%}" if not np.isnan(thp) else "—",
             "Status": "✅ Compliant" if hp >= 0.20 else ("⚠️ Caution" if hp >= 0 else "🚨 Breach"),
         })
-
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — Compliance
@@ -787,78 +719,37 @@ with tabs[0]:
 with tabs[1]:
     breaches = fc[(fc["uk_headroom"] < 0) & (~fc["is_actual"])]
     cautions = fc[(fc["uk_headroom"] >= 0) & (fc["headroom_pct"] < 0.20) & (~fc["is_actual"])]
-
     if not breaches.empty:
-        st.error(
-            "🚨 **Forecast UK breach months:** " +
-            ", ".join(f"{MN[int(r['Month'])]} {int(r['Year'])} ({fmt(r['uk_headroom'])})" for _, r in breaches.iterrows())
-        )
-
+        st.error("🚨 **Forecast UK breach months:** " + ", ".join(f"{MN[int(r['Month'])]} {int(r['Year'])} ({fmt(r['uk_headroom'])})" for _, r in breaches.iterrows()))
     if not cautions.empty:
-        st.warning(
-            "⚠️ **UK caution months:** " +
-            ", ".join(f"{MN[int(r['Month'])]} {int(r['Year'])} ({r['headroom_pct']:.0%})" for _, r in cautions.iterrows())
-        )
+        st.warning("⚠️ **UK caution months:** " + ", ".join(f"{MN[int(r['Month'])]} {int(r['Year'])} ({r['headroom_pct']:.0%})" for _, r in cautions.iterrows()))
 
-    fig2 = make_subplots(
-        rows=2,
-        cols=1,
-        subplot_titles=["UK headroom (£m)", "Total headroom (£m)"],
-        vertical_spacing=0.14,
-    )
-
+    fig2 = make_subplots(rows=2, cols=1, subplot_titles=["UK headroom (£m)", "Total headroom (£m)"], vertical_spacing=0.14)
     for series, ri, col in [(fc["uk_headroom"], 1, BLUE), (fc["total_headroom"], 2, GREEN)]:
         act, fcast = split_act_fc(series / 1e6)
         rgb = tuple(int(col[i:i+2], 16) for i in (1, 3, 5))
-
-        fig2.add_trace(go.Scatter(
-            x=labels,
-            y=act,
-            line=dict(color=col, width=2),
-            fill="tozeroy",
-            fillcolor=f"rgba({rgb[0]},{rgb[1]},{rgb[2]},0.08)",
-            name="Actual",
-        ), row=ri, col=1)
-
-        fig2.add_trace(go.Scatter(
-            x=labels,
-            y=fcast,
-            line=dict(color=col, width=1.5, dash="dot"),
-            name="Forecast",
-        ), row=ri, col=1)
-
+        fig2.add_trace(go.Scatter(x=labels, y=act, line=dict(color=col, width=2), fill="tozeroy", fillcolor=f"rgba({rgb[0]},{rgb[1]},{rgb[2]},0.08)", name="Actual"), row=ri, col=1)
+        fig2.add_trace(go.Scatter(x=labels, y=fcast, line=dict(color=col, width=1.5, dash="dot"), name="Forecast"), row=ri, col=1)
         fig2.add_hline(y=0, line_color=RED, line_dash="dash", line_width=1.5, row=ri, col=1)
-
-    fig2.update_layout(
-        height=480,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        showlegend=False,
-        margin=dict(l=0, r=0, t=40, b=0),
-    )
+    fig2.update_layout(height=480, plot_bgcolor="white", paper_bgcolor="white", showlegend=False, margin=dict(l=0, r=0, t=40, b=0))
     fig2.update_yaxes(tickformat=",.1f", ticksuffix="m", gridcolor=GREY)
     st.plotly_chart(fig2, use_container_width=True)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # YoY helper
 # ══════════════════════════════════════════════════════════════════════════════
 def build_yoy_table(in_spec, out_spec, cats, is_out, entity_label):
     spec = out_spec if is_out else in_spec
-
     if spec.empty:
         st.info(f"No {entity_label} data available.")
         return
-
     all_ym = sorted(set(spec.index.tolist()))
     months_avail = sorted(set(mn for _, mn in all_ym))
     years_avail = sorted(set(yr for yr, _ in all_ym))
-
     rows = []
     for cat in cats:
         if cat not in spec.columns:
             continue
-
         row = {"Category": cat}
         for mn in months_avail:
             for yr in years_avail:
@@ -866,92 +757,56 @@ def build_yoy_table(in_spec, out_spec, cats, is_out, entity_label):
                 if is_out:
                     v = abs(v)
                 row[f"{MN[mn]} {yr}"] = v
-
         rows.append(row)
-
     if not rows:
         st.info(f"No {entity_label} {'outflow' if is_out else 'inflow'} categories available.")
         return
-
     df_s = pd.DataFrame(rows).fillna(0)
-
     for col in df_s.columns[1:]:
         df_s[col] = df_s[col].apply(lambda v: fmt(v) if v != 0 else "—")
-
     st.dataframe(df_s, use_container_width=True, hide_index=True)
 
     fig = go.Figure()
-
     for yi, yr in enumerate(years_avail):
         vals = []
         for mn in months_avail:
-            total = sum(
-                abs(safe_get(spec, yr, mn, c)) if is_out else safe_get(spec, yr, mn, c)
-                for c in cats
-                if c in spec.columns
-            )
+            total = sum(abs(safe_get(spec, yr, mn, c)) if is_out else safe_get(spec, yr, mn, c) for c in cats if c in spec.columns)
             vals.append(total / 1e6)
-
         clr = ["rgba(136,135,128,0.55)", "rgba(28,20,100,0.7)", "rgba(59,109,17,0.7)", "rgba(201,168,76,0.7)"][yi % 4]
-        fig.add_trace(go.Bar(
-            x=[MN[m] for m in months_avail],
-            y=vals,
-            name=str(yr),
-            marker_color=clr,
-            offsetgroup=yi,
-        ))
-
-    fig.update_layout(
-        barmode="group",
-        height=240,
-        title=f"{entity_label} {'outflows' if is_out else 'inflows'} by month (£m)",
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        yaxis=dict(tickformat=",.1f", ticksuffix="m", gridcolor=GREY),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)),
-        margin=dict(l=0, r=0, t=40, b=0),
-    )
-
+        fig.add_trace(go.Bar(x=[MN[m] for m in months_avail], y=vals, name=str(yr), marker_color=clr, offsetgroup=yi))
+    fig.update_layout(barmode="group", height=240, title=f"{entity_label} {'outflows' if is_out else 'inflows'} by month (£m)", plot_bgcolor="white", paper_bgcolor="white", yaxis=dict(tickformat=",.1f", ticksuffix="m", gridcolor=GREY), legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)), margin=dict(l=0, r=0, t=40, b=0))
     st.plotly_chart(fig, use_container_width=True)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3 / 4 — YoY
 # ══════════════════════════════════════════════════════════════════════════════
 with tabs[2]:
     uk_sub = st.tabs(["📥 UK Inflow YoY", "📤 UK Outflow YoY"])
-
     with uk_sub[0]:
         avail_in = [c for c in KEY_INFLOW if c in uk_in_spec.columns and c not in {"FX TRADE IN", "FX TRADE OUT"}]
         st.caption("Like-for-like: same calendar month year-on-year. FX trade excluded.")
         build_yoy_table(uk_in_spec, uk_out_spec, avail_in, False, "UK")
-
     with uk_sub[1]:
         avail_out = [c for c in KEY_OUTFLOW if c in uk_out_spec.columns and c not in {"FX TRADE IN", "FX TRADE OUT"}]
         st.caption("Outflows shown as positive. FX trade excluded.")
         build_yoy_table(uk_in_spec, uk_out_spec, avail_out, True, "UK")
 
-
 with tabs[3]:
     ie_sub = st.tabs(["📥 Ireland Inflow YoY", "📤 Ireland Outflow YoY"])
-
     with ie_sub[0]:
         ie_in_cats = [c for c in KEY_INFLOW if c in ie_in_spec.columns and c not in {"FX TRADE IN", "FX TRADE OUT"}]
         st.caption("Ireland inflows. FX trade excluded.")
         build_yoy_table(ie_in_spec, ie_out_spec, ie_in_cats, False, "Ireland")
-
     with ie_sub[1]:
         ie_out_cats = [c for c in KEY_OUTFLOW if c in ie_out_spec.columns and c not in {"FX TRADE IN", "FX TRADE OUT"}]
         st.caption("Ireland outflows shown as positive. FX trade excluded.")
         build_yoy_table(ie_in_spec, ie_out_spec, ie_out_cats, True, "Ireland")
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 5 — 3-Month Focus — TOTAL CASH BASIS
 # ══════════════════════════════════════════════════════════════════════════════
 with tabs[4]:
     focus_months = []
-
     for delta in range(3):
         mn = latest_mn + delta
         yr = latest_yr
@@ -966,10 +821,8 @@ with tabs[4]:
     )
 
     cols = st.columns(3)
-
     for ci, (fyr, fmn) in enumerate(focus_months):
         fc_row_df = fc[(fc["Year"] == fyr) & (fc["Month"] == fmn)]
-
         if fc_row_df.empty:
             with cols[ci]:
                 st.info(f"{MN[fmn]} {fyr} — no forecast data")
@@ -978,7 +831,6 @@ with tabs[4]:
         fc_row = fc_row_df.iloc[0]
         is_part = fyr == latest_yr and fmn == latest_mn
 
-        # Opening balance — TOTAL CASH
         prev_mn_3, prev_yr_3 = (fmn - 1, fyr) if fmn > 1 else (12, fyr - 1)
         prev_fc = fc[(fc["Year"] == prev_yr_3) & (fc["Month"] == prev_mn_3)]
         book2_open_month = float(prev_fc.iloc[0]["total_cash"]) if not prev_fc.empty else float(fc_row["total_cash"])
@@ -1006,7 +858,6 @@ with tabs[4]:
             return abs(safe_get(uk_out_spec, yr, mn, cat) + safe_get(ie_out_spec, yr, mn, cat))
 
         INFLOW_CORE = ["AGENT RECEIPTS", "FD RECEIPT", "DIRECT RECEIPTS"]
-
         ly_inflow = sum(total_in(fyr - 1, fmn, c) for c in INFLOW_CORE)
         ly_apcogs = total_out_abs(fyr - 1, fmn, "AP COGS")
         ly_apovh = total_out_abs(fyr - 1, fmn, "AP OVH")
@@ -1044,17 +895,14 @@ with tabs[4]:
         cy_inflow_mtd = sum(total_in(fyr, fmn, c) for c in INFLOW_CORE)
         hold_vs_ly = max(0, ly_ap_for_period_adj - allow_ap_remain)
         ly_ap_per_wk = ly_ap_total / weeks_in if weeks_in else 0
-
         badge = "🚨 Breach" if hpct < 0 else ("⚠️ Monitor" if hpct < 0.20 else "✅ On track")
 
         with cols[ci]:
             st.markdown(f"### {MN[fmn]} {fyr} {badge}")
-
             if is_part:
                 st.caption(f"**{latest_day} of {days_in} days elapsed · {rem} days / ~{weeks_rem:.1f} weeks remaining**")
 
             st.markdown("**Cash position**")
-
             wk_cl_fmt = fmt(wk_close_this) if wk_close_this is not None else "—"
             wk_hr_fmt = fmt(wk_headroom) if wk_headroom is not None else "—"
             wk_hr_pct = f"({wk_headroom / uk_req:.0%})" if wk_headroom is not None and uk_req > 0 else ""
@@ -1088,7 +936,6 @@ with tabs[4]:
 
             st.markdown("---")
             st.markdown("### 🔑 AP payment capacity")
-
             if hold_vs_ly > 50000:
                 st.error(f"**Hold back {fmt(hold_vs_ly)} vs LY run rate** to hit forecast close")
             else:
@@ -1100,20 +947,8 @@ with tabs[4]:
                 adj_note += f" · receipts {adj_receipts:+d}%"
             if adj_payments != 0:
                 adj_note += f" · AP {adj_payments:+d}%"
-
-            m1.metric(
-                "Total AP budget " + ("remaining" if is_part else "this month"),
-                fmt(allow_ap_remain),
-                delta=f"LY rate: {fmt(ly_ap_for_period_adj)}{adj_note}",
-                delta_color="off",
-            )
-
-            m2.metric(
-                "Weekly AP capacity",
-                fmt(allow_ap_per_wk),
-                delta=f"LY weekly avg: {fmt(ly_ap_per_wk)}",
-                delta_color="off",
-            )
+            m1.metric("Total AP budget " + ("remaining" if is_part else "this month"), fmt(allow_ap_remain), delta=f"LY rate: {fmt(ly_ap_for_period_adj)}{adj_note}", delta_color="off")
+            m2.metric("Weekly AP capacity", fmt(allow_ap_per_wk), delta=f"LY weekly avg: {fmt(ly_ap_per_wk)}", delta_color="off")
 
             if is_part and ap_mtd > 0:
                 st.caption(f"AP COGS + OVH already paid this month: **{fmt(ap_mtd)}** · Remaining capacity: {fmt(allow_ap_remain)}")
@@ -1138,116 +973,60 @@ with tabs[4]:
                     f"| Tax | {fmt(ly_tax)} | {fmt(ly_tax * frac_rem)} |"
                 )
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6 — Opportunities & Risks — TOTAL GROUP
 # ══════════════════════════════════════════════════════════════════════════════
 with tabs[5]:
     st.caption("Total group cash flows (UK + Ireland). Actuals vs total forecast-implied and prior year same month.")
-
     act_data = fc[fc["is_actual"] & ~fc["is_partial"]]
 
     monthly_data = []
     for _, row in act_data.iterrows():
         yr, mn = int(row["Year"]), int(row["Month"])
-
         cy_net = (
-            safe_entity(entity_m, yr, mn, "UK", "inflow") +
-            safe_entity(entity_m, yr, mn, "UK", "outflow") +
-            safe_entity(entity_m, yr, mn, "Ireland", "inflow") +
-            safe_entity(entity_m, yr, mn, "Ireland", "outflow")
+            safe_entity(entity_m, yr, mn, "UK", "inflow") + safe_entity(entity_m, yr, mn, "UK", "outflow") +
+            safe_entity(entity_m, yr, mn, "Ireland", "inflow") + safe_entity(entity_m, yr, mn, "Ireland", "outflow")
         )
-
         ly_net = (
-            safe_entity(entity_m, yr - 1, mn, "UK", "inflow") +
-            safe_entity(entity_m, yr - 1, mn, "UK", "outflow") +
-            safe_entity(entity_m, yr - 1, mn, "Ireland", "inflow") +
-            safe_entity(entity_m, yr - 1, mn, "Ireland", "outflow")
+            safe_entity(entity_m, yr-1, mn, "UK", "inflow") + safe_entity(entity_m, yr-1, mn, "UK", "outflow") +
+            safe_entity(entity_m, yr-1, mn, "Ireland", "inflow") + safe_entity(entity_m, yr-1, mn, "Ireland", "outflow")
         )
-
         fc_imp = float(row.get("fc_implied_net_total", 0) or 0)
-
-        monthly_data.append({
-            "label": f"{MN[mn]} {yr}",
-            "cy_net": cy_net,
-            "ly_net": ly_net,
-            "fc_imp": fc_imp,
-        })
+        monthly_data.append({"label": f"{MN[mn]} {yr}", "cy_net": cy_net, "ly_net": ly_net, "fc_imp": fc_imp})
 
     all_labels_c, all_act_c, all_fc_c, all_ly_c = [], [], [], []
-
     for _, row in fc.iterrows():
         yr, mn = int(row["Year"]), int(row["Month"])
         is_act_complete = bool(row["is_actual"]) and not bool(row["is_partial"])
-
         ly_net = (
-            safe_entity(entity_m, yr - 1, mn, "UK", "inflow") +
-            safe_entity(entity_m, yr - 1, mn, "UK", "outflow") +
-            safe_entity(entity_m, yr - 1, mn, "Ireland", "inflow") +
-            safe_entity(entity_m, yr - 1, mn, "Ireland", "outflow")
+            safe_entity(entity_m, yr-1, mn, "UK", "inflow") + safe_entity(entity_m, yr-1, mn, "UK", "outflow") +
+            safe_entity(entity_m, yr-1, mn, "Ireland", "inflow") + safe_entity(entity_m, yr-1, mn, "Ireland", "outflow")
         ) / 1e6
-
         act_net = None
         if is_act_complete:
             act_net = (
-                safe_entity(entity_m, yr, mn, "UK", "inflow") +
-                safe_entity(entity_m, yr, mn, "UK", "outflow") +
-                safe_entity(entity_m, yr, mn, "Ireland", "inflow") +
-                safe_entity(entity_m, yr, mn, "Ireland", "outflow")
+                safe_entity(entity_m, yr, mn, "UK", "inflow") + safe_entity(entity_m, yr, mn, "UK", "outflow") +
+                safe_entity(entity_m, yr, mn, "Ireland", "inflow") + safe_entity(entity_m, yr, mn, "Ireland", "outflow")
             ) / 1e6
-
         all_labels_c.append(f"{MN[mn]} {yr}")
         all_act_c.append(act_net)
         all_fc_c.append(float(row.get("fc_implied_net_total", 0) or 0) / 1e6)
         all_ly_c.append(ly_net if abs(ly_net) > 0.1 else None)
 
     st.subheader("Monthly net cash — total group")
-
     fig_or = go.Figure()
     bar_vals = [all_act_c[i] if all_act_c[i] is not None else all_fc_c[i] for i in range(len(all_labels_c))]
     bar_colors = [GREEN if (v or 0) >= 0 else RED for v in bar_vals]
-
-    fig_or.add_trace(go.Bar(
-        x=all_labels_c,
-        y=bar_vals,
-        name="Actual / Forecast",
-        marker_color=bar_colors,
-        opacity=0.85,
-    ))
-
-    fig_or.add_trace(go.Scatter(
-        x=all_labels_c,
-        y=all_ly_c,
-        name="Prior year same month",
-        line=dict(color=AMBER, width=2, dash="dot"),
-        mode="lines+markers",
-        connectgaps=False,
-    ))
-
+    fig_or.add_trace(go.Bar(x=all_labels_c, y=bar_vals, name="Actual / Forecast", marker_color=bar_colors, opacity=0.85))
+    fig_or.add_trace(go.Scatter(x=all_labels_c, y=all_ly_c, name="Prior year same month", line=dict(color=AMBER, width=2, dash="dot"), mode="lines+markers", connectgaps=False))
     fig_or.add_hline(y=0, line_color="rgba(0,0,0,0.2)", line_width=0.8)
-
-    fig_or.update_layout(
-        height=320,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        yaxis=dict(tickformat=",.1f", ticksuffix="m", gridcolor=GREY, title="£m"),
-        xaxis=dict(tickangle=45),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)),
-        margin=dict(l=0, r=0, t=40, b=0),
-    )
-
+    fig_or.update_layout(height=320, plot_bgcolor="white", paper_bgcolor="white", yaxis=dict(tickformat=",.1f", ticksuffix="m", gridcolor=GREY, title="£m"), xaxis=dict(tickangle=45), legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)), margin=dict(l=0, r=0, t=40, b=0))
     st.plotly_chart(fig_or, use_container_width=True)
 
     if monthly_data:
         trend_vs_ly = np.mean([d["cy_net"] - d["ly_net"] for d in monthly_data])
-        trend_vs_fc = (
-            np.mean([d["cy_net"] - d["fc_imp"] for d in monthly_data if abs(d["fc_imp"]) > 100000])
-            if any(abs(d["fc_imp"]) > 100000 for d in monthly_data)
-            else 0.0
-        )
-
+        trend_vs_fc = np.mean([d["cy_net"] - d["fc_imp"] for d in monthly_data if abs(d["fc_imp"]) > 100000]) if any(abs(d["fc_imp"]) > 100000 for d in monthly_data) else 0.0
         c1, c2 = st.columns(2)
-
         with c1:
             st.markdown("### Opportunities")
             if trend_vs_ly > 0.2e6:
@@ -1256,7 +1035,6 @@ with tabs[5]:
                 st.success(f"📈 Running **{fmt(trend_vs_fc)}/month ahead** of forecast file on average.")
             if trend_vs_ly <= 0.2e6 and trend_vs_fc <= 0.2e6:
                 st.info("No material positive trend detected.")
-
         with c2:
             st.markdown("### Risks")
             if trend_vs_ly < -0.2e6:
@@ -1269,14 +1047,7 @@ with tabs[5]:
     buf = io.BytesIO()
     fc.reset_index().to_excel(buf, index=False, sheet_name="Dashboard Data")
     buf.seek(0)
-
-    st.download_button(
-        "⬇️ Download dashboard data (.xlsx)",
-        data=buf,
-        file_name="shg_cash_dashboard.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
+    st.download_button("⬇️ Download dashboard data (.xlsx)", data=buf, file_name="shg_cash_dashboard.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7 — Weekly 4+13 Outlook — TOTAL CASH BASIS
@@ -1300,38 +1071,28 @@ with tabs[6]:
         )
 
     _, col_btn = st.columns([8, 1])
-
     with col_btn:
         if st.button("Reset overrides"):
             st.session_state.weekly_ov = {}
             st.rerun()
 
-    ovr_labels = [
-        "AP COGS", "AP OVH", "PAYROLL", "FD RECEIPT", "AGENT RECEIPTS",
-        "FX TRADE IN", "FX TRADE OUT", "FLIGHT COSTS", "INTERCO (net)",
-        "OTHER RECEIPT", "OTHER CASH OUT"
-    ]
-
+    ovr_labels = ["AP COGS", "AP OVH", "PAYROLL", "FD RECEIPT", "AGENT RECEIPTS", "FX TRADE IN", "FX TRADE OUT", "FLIGHT COSTS", "INTERCO (net)", "OTHER RECEIPT", "OTHER CASH OUT"]
     spec_map = {l: s for l, s, _ in ROW_SPECS}
 
     with st.expander("Edit forecast — nearest 4 weeks (values in £)", expanded=False):
         st.caption("Overrides feed directly into this 4+13 table and the 3-Month Focus tab.")
         cols_ov = st.columns(4)
-
         for fi in range(min(4, len(fc_weeks))):
             i = fi + n_actuals
             wk = all_weeks[i]
-
             with cols_ov[fi]:
                 st.markdown(f"**{wk.strftime('%d %b %Y')}**")
-
                 for label in ovr_labels:
                     spec = spec_map.get(label, label)
                     ov_key = f"{label}_{i}"
                     is_lk = label in WEEKLY_LOCK
                     is_ico = "INTERCO" in label
                     spec_blank = next((b for l2, s2, b in ROW_SPECS if l2 == label), False)
-
                     if spec_blank:
                         fc_def = 0.0
                     elif is_lk:
@@ -1341,7 +1102,6 @@ with tabs[6]:
 
                     curr = float(st.session_state.weekly_ov.get(ov_key, fc_def))
                     hint = "🔒 " if is_lk else ("🔵 " if is_ico else ("⬜ " if spec_blank else ""))
-
                     new_v = st.number_input(
                         f"{hint}{label}",
                         value=float(np.clip(curr, -9_999_999.0, 9_999_999.0)),
@@ -1351,17 +1111,12 @@ with tabs[6]:
                         format="%.0f",
                         key=f"wov_{label}_{fi}",
                     )
-
                     if abs(new_v - fc_def) > 500:
                         st.session_state.weekly_ov[ov_key] = new_v
                     elif ov_key in st.session_state.weekly_ov:
                         del st.session_state.weekly_ov[ov_key]
 
-    wk_hdrs = [
-        f"{'W' if i < n_actuals else '~W'}{all_weeks[i].isocalendar()[1]}\n{all_weeks[i].strftime('%d/%m')}"
-        for i in range(N_W)
-    ]
-
+    wk_hdrs = [f"{'W' if i < n_actuals else '~W'}{all_weeks[i].isocalendar()[1]}\n{all_weeks[i].strftime('%d/%m')}" for i in range(N_W)]
     display_rows = []
 
     def dr(label, vals, kind="data", indent=False):
@@ -1371,23 +1126,16 @@ with tabs[6]:
         display_rows.append({"_kind": kind, "_label": label, **row})
 
     dr("Opening total cash balance", opens, "balance")
-
     display_rows.append({"_kind": "header", "_label": "RECEIPTS", "Row": "RECEIPTS", **{h: "" for h in wk_hdrs}})
     for label in RECEIPT_LABELS:
         dr(label, data[label], indent=True)
-
     dr("Total receipts", totR, "total")
-
     display_rows.append({"_kind": "sep", "_label": "", "Row": "", **{h: "" for h in wk_hdrs}})
     display_rows.append({"_kind": "header", "_label": "PAYMENTS", "Row": "PAYMENTS", **{h: "" for h in wk_hdrs}})
-
     for label in PAYMENT_LABELS:
         dr(label, data[label], indent=True)
-
     dr("Total payments", totP, "total")
-
     display_rows.append({"_kind": "sep", "_label": "", "Row": "", **{h: "" for h in wk_hdrs}})
-
     dr("Net cash", net, "total")
     dr("Closing total cash balance", closes, "balance")
 
@@ -1395,24 +1143,15 @@ with tabs[6]:
         """Return total forecast close, client money and total headroom in £k at month end only."""
         mn, yr = wk.month, wk.year
         wks_in_month = [w for w in all_weeks if w.month == mn and w.year == yr]
-
         if not wks_in_month or wk != max(wks_in_month):
             return None, None, None
-
         book2_row = fc[(fc["Year"] == yr) & (fc["Month"] == mn)]
-
         if book2_row.empty:
             return None, None, None
-
         row = book2_row.iloc[0]
-        return (
-            float(row["total_cash"]) / 1000,
-            float(row["client_money"]) / 1000,
-            float(row["total_headroom"]) / 1000,
-        )
+        return float(row["total_cash"]) / 1000, float(row["client_money"]) / 1000, float(row["total_headroom"]) / 1000
 
     b2_fc_close, b2_cm, b2_headroom, b2_variance = [], [], [], []
-
     for i, wk in enumerate(all_weeks):
         fc_c, cm_c, hr_c = get_book2_for_week(wk)
         b2_fc_close.append(fc_c)
@@ -1446,13 +1185,7 @@ with tabs[6]:
 
     df_display = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in display_rows])
     df_display["Row"] = df_display["Row"].astype(str).str.strip()
-
-    st.dataframe(
-        df_display,
-        use_container_width=True,
-        hide_index=True,
-        height=min(80 + len(display_rows) * 32, 900),
-    )
+    st.dataframe(df_display, use_container_width=True, hide_index=True, height=min(80 + len(display_rows) * 32, 900))
 
     ch1, ch2 = st.columns(2)
     wk_lbl = [all_weeks[i].strftime("%d %b") for i in range(N_W)]
@@ -1460,126 +1193,48 @@ with tabs[6]:
     with ch1:
         st.caption("Closing total cash balance (£k) — solid = actual, dashed = forecast")
         fig_bal = go.Figure()
-
-        fig_bal.add_trace(go.Scatter(
-            x=wk_lbl[:n_actuals],
-            y=closes[:n_actuals],
-            name="Actual",
-            line=dict(color=BLUE, width=2.5),
-            mode="lines+markers",
-            marker=dict(size=4),
-        ))
-
-        fig_bal.add_trace(go.Scatter(
-            x=wk_lbl[n_actuals-1:],
-            y=closes[n_actuals-1:],
-            name="Forecast",
-            line=dict(color=BLUE, width=1.5, dash="dot"),
-            mode="lines+markers",
-            marker=dict(size=3, symbol="circle-open"),
-        ))
-
-        fig_bal.update_layout(
-            height=220,
-            plot_bgcolor="white",
-            paper_bgcolor="white",
-            yaxis=dict(tickformat=",.0f", ticksuffix="k", gridcolor=GREY),
-            legend=dict(orientation="h", y=1.1, font=dict(size=10)),
-            margin=dict(l=0, r=0, t=10, b=0),
-        )
-
+        fig_bal.add_trace(go.Scatter(x=wk_lbl[:n_actuals], y=closes[:n_actuals], name="Actual", line=dict(color=BLUE, width=2.5), mode="lines+markers", marker=dict(size=4)))
+        fig_bal.add_trace(go.Scatter(x=wk_lbl[n_actuals-1:], y=closes[n_actuals-1:], name="Forecast", line=dict(color=BLUE, width=1.5, dash="dot"), mode="lines+markers", marker=dict(size=3, symbol="circle-open")))
+        fig_bal.update_layout(height=220, plot_bgcolor="white", paper_bgcolor="white", yaxis=dict(tickformat=",.0f", ticksuffix="k", gridcolor=GREY), legend=dict(orientation="h", y=1.1, font=dict(size=10)), margin=dict(l=0, r=0, t=10, b=0))
         st.plotly_chart(fig_bal, use_container_width=True)
 
     with ch2:
         st.caption("Weekly receipts vs payments (£k) — total group")
         fig_bar = go.Figure()
-
-        fig_bar.add_trace(go.Bar(
-            x=wk_lbl,
-            y=totR,
-            name="Receipts",
-            marker_color=[BLUE if i < n_actuals else "#7B72C8" for i in range(N_W)],
-            offsetgroup=0,
-        ))
-
-        fig_bar.add_trace(go.Bar(
-            x=wk_lbl,
-            y=[abs(v) for v in totP],
-            name="Payments",
-            marker_color=[RED if i < n_actuals else "#F09595" for i in range(N_W)],
-            offsetgroup=1,
-        ))
-
-        fig_bar.update_layout(
-            barmode="group",
-            height=220,
-            plot_bgcolor="white",
-            paper_bgcolor="white",
-            yaxis=dict(tickformat=",.0f", ticksuffix="k", gridcolor=GREY),
-            legend=dict(orientation="h", y=1.1, font=dict(size=10)),
-            margin=dict(l=0, r=0, t=10, b=0),
-        )
-
+        fig_bar.add_trace(go.Bar(x=wk_lbl, y=totR, name="Receipts", marker_color=[BLUE if i < n_actuals else "#7B72C8" for i in range(N_W)], offsetgroup=0))
+        fig_bar.add_trace(go.Bar(x=wk_lbl, y=[abs(v) for v in totP], name="Payments", marker_color=[RED if i < n_actuals else "#F09595" for i in range(N_W)], offsetgroup=1))
+        fig_bar.update_layout(barmode="group", height=220, plot_bgcolor="white", paper_bgcolor="white", yaxis=dict(tickformat=",.0f", ticksuffix="k", gridcolor=GREY), legend=dict(orientation="h", y=1.1, font=dict(size=10)), margin=dict(l=0, r=0, t=10, b=0))
         st.plotly_chart(fig_bar, use_container_width=True)
 
     st.caption("Forecast closing total cash balance — 🟢 net inflow week · 🟡 positive but below opening · 🔴 negative")
-
     gauge_weeks = fc_weeks[:13]
-
     if gauge_weeks:
         g_cols = st.columns(len(gauge_weeks))
-
         for fi, wk in enumerate(gauge_weeks):
             i = fi + n_actuals
-
             if i >= len(closes):
                 continue
-
             cl, op = closes[i], opens[i]
             signal = "🟢" if cl > op else ("🟡" if cl > 0 else "🔴")
-
             with g_cols[fi]:
-                st.metric(
-                    label=wk.strftime("%d %b"),
-                    value=f"£{cl:,.0f}k",
-                    delta=f"open: £{op:,.0f}k · {signal}",
-                    delta_color="off",
-                )
+                st.metric(label=wk.strftime("%d %b"), value=f"£{cl:,.0f}k", delta=f"open: £{op:,.0f}k · {signal}", delta_color="off")
 
     st.divider()
-
     exp_rows = {"Opening total cash balance": opens}
-
     for l in RECEIPT_LABELS:
         exp_rows[l] = data[l]
-
     exp_rows["Total receipts"] = totR
-
     for l in PAYMENT_LABELS:
         exp_rows[l] = data[l]
-
     exp_rows["Total payments"] = totP
     exp_rows["Net cash"] = net
     exp_rows["Closing total cash balance"] = closes
-
-    col_names = [
-        f"{'ACT_' if i < n_actuals else 'FC_'}{all_weeks[i].strftime('%d%b%Y')}"
-        for i in range(N_W)
-    ]
-
+    col_names = [f"{'ACT_' if i < n_actuals else 'FC_'}{all_weeks[i].strftime('%d%b%Y')}" for i in range(N_W)]
     export_df = pd.DataFrame(exp_rows, index=col_names).T
-
     buf2 = io.BytesIO()
     export_df.to_excel(buf2, sheet_name="Weekly Cash Flow")
     buf2.seek(0)
-
-    st.download_button(
-        "⬇️ Export weekly cash flow (.xlsx)",
-        data=buf2,
-        file_name=f"weekly_cashflow_{latest_date.strftime('%Y%m%d')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
+    st.download_button("⬇️ Export weekly cash flow (.xlsx)", data=buf2, file_name=f"weekly_cashflow_{latest_date.strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 8 — How it works
@@ -1626,3 +1281,41 @@ Example:
 ```text
 Opening balance as at Sunday: 21 Jun 2026
 Opening balance used in table: W26 22/06/2026
+```
+
+If the mapped Monday week is visible in the 4+13 table, the opening balance is anchored to that week, then the model rolls:
+- forwards for later weeks; and
+- backwards for earlier displayed weeks.
+""")
+
+    with st.expander("🎯 3-Month Focus and 4+13 alignment", expanded=True):
+        st.markdown("""
+This version runs both tabs on the same basis:
+
+- **Weekly 4+13 Outlook** uses total group cash: UK + Ireland.
+- **3-Month Focus** also uses the same total-cash close chain.
+- Month-end tracking compares against **forecast total close**, not UK close.
+- Variance is weekly forecast total close less forecast file total close.
+
+That ensures the 3-Month Focus and 4+13 Outlook reconcile.
+""")
+
+    with st.expander("🛡️ Compliance"):
+        st.markdown("""
+Compliance still uses the UK cash requirement:
+
+```text
+UK required = client money × selected requirement %
+UK headroom = UK cash − UK required
+Total headroom = total cash − UK required
+```
+
+The monthly and weekly planning views use total cash because cash can be managed across UK / Ireland, while the compliance badge still highlights the UK requirement position.
+""")
+
+# ── Footer ───────────────────────────────────────────────────────────────────
+st.divider()
+c1, c2, c3 = st.columns(3)
+c1.caption(f"Bank data: {df_raw['PostDate'].min().strftime('%d %b %Y')} – {latest_date.strftime('%d %b %Y')}")
+c2.caption(f"Forecast: {fc.index[0].strftime('%b %Y')} – {fc.index[-1].strftime('%b %Y')} ({len(fc)} months)")
+c3.caption(f"Transactions: {len(df_raw):,} · Accounts: {df_raw['AccountName'].nunique()} · FX: EUR {eur_rate:.3f} · USD {usd_rate:.3f} · CAD {cad_rate:.3f}")
