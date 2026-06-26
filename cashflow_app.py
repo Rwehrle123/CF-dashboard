@@ -989,12 +989,18 @@ with tabs[4]:
     # ── Use shared weekly close chain (includes overrides + sliders) ─────────────
     _wk_outlook_month_close = shared_month_end_close
 
+    _hdr, _btn = st.columns([8, 1])
+    with _hdr:
+        st.caption(
+            f"Bank data to **{latest_date.strftime('%d %b %Y')}**. "
+            f"Current month ({MN[latest_mn]} {latest_yr}) + next 2. "
+            f"Weekly outlook uses latest overrides and sliders from the 4+13 tab."
+        )
+    with _btn:
+        if st.button("🔄 Refresh", key="refresh_3mo",
+                     help="Reloads the page so weekly outlook reflects any changes made in the 4+13 tab"):
+            st.rerun()
 
-    st.caption(
-        f"Bank data to **{latest_date.strftime('%d %b %Y')}**. "
-        f"Current month ({MN[latest_mn]} {latest_yr}) + next 2. "
-        f"**AP capacity uses weekly outlook close as opening** — reconciled with forecast targetarget."
-    )
     cols = st.columns(3)
     for ci, (fyr, fmn) in enumerate(focus_months):
         fc_row = fc[(fc['Year'] == fyr) & (fc['Month'] == fmn)]
