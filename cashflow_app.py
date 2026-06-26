@@ -862,104 +862,151 @@ with tabs[4]:
         uk_req    = float(fc_row['uk_required'])
         headroom  = float(fc_row['uk_headroom'])
         hpct      = headroom / uk_req if uk_req > 0 else 0
-        # ── Inflows: core receipts only (Direct, Agent, FD) ─────────────────
+        # ── Category definitions — explicit, no FX, no interco, no sweep ───────
         INFLOW_CORE  = ['AGENT RECEIPTS', 'FD RECEIPT', 'DIRECT RECEIPTS']
-        OUTFLOW_AP   = ['AP COGS', 'AP OVH']
-        OUTFLOW_FLT  = ['FLIGHT COSTS']
-        OUTFLOW_PAY  = ['PAYROLL', 'TAX']
-        OUTFLOW_OTH  = [c for c in KEY_OUTFLOW
-                        if c not in OUTFLOW_AP + OUTFLOW_FLT + OUTFLOW_PAY
-                        and c in uk_out_spec.columns]
+        # Fixed outflows: things that happen regardless and can't be deferred
+        OUTFLOW_FIXED = ['FLIGHT COSTS', 'PAYROLL', 'TAX']
+        # Controllable AP — the main lever
+        OUTFLOW_AP    = ['AP COGS', 'AP OVH']
+        # Deliberately excluded from all calculations:
+        # FX TRADE OUT, INTERCO, SWEEP, CUSTOMER REFUNDS, OTHER COSTS
+        # These are either treasury flows, non-cash, or unpredictable
 
-        ly_inflow   = sum(safe_get(uk_in_spec,  fyr-1, fmn, c) for c in INFLOW_CORE  if c in uk_in_spec.columns)
-        ly_apcogs   = abs(safe_get(uk_out_spec, fyr-1, fmn, 'AP COGS'))
-        ly_apovh    = abs(safe_get(uk_out_spec, fyr-1, fmn, 'AP OVH'))
-        ly_ap_total = ly_apcogs + ly_apovh
-        ly_flight   = sum(abs(safe_get(uk_out_spec, fyr-1, fmn, c)) for c in OUTFLOW_FLT if c in uk_out_spec.columns)
-        ly_payroll  = sum(abs(safe_get(uk_out_spec, fyr-1, fmn, c)) for c in OUTFLOW_PAY if c in uk_out_spec.columns)
-        ly_other    = sum(abs(safe_get(uk_out_spec, fyr-1, fmn, c)) for c in OUTFLOW_OTH)
-        ly_non_ap   = ly_flight + ly_payroll + ly_other  # fixed costs — can't easily defer
+        ly_inflow    = sum(safe_get(uk_in_spec,  fyr-1, fmn, c) for c in INFLOW_CORE   if c in uk_in_spec.columns)
+        ly_apcogs    = abs(safe_get(uk_out_spec, fyr-1, fmn, 'AP COGS'))
+        ly_apovh     = abs(safe_get(uk_out_spec, fyr-1, fmn, 'AP OVH'))
+        ly_ap_total  = ly_apcogs + ly_apovh
+        ly_flight    = abs(safe_get(uk_out_spec, fyr-1, fmn, 'FLIGHT COSTS'))
+        ly_payroll   = abs(safe_get(uk_out_spec, fyr-1, fmn, 'PAYROLL'))
+        ly_tax       = abs(safe_get(uk_out_spec, fyr-1, fmn, 'TAX'))
+        ly_fixed     = ly_flight + ly_payroll + ly_tax
 
-        days_in = (pd.Timestamp(fyr, fmn, 1) + pd.offsets.MonthEnd(1)).day
+        days_in  = (pd.Timestamp(fyr, fmn, 1) + pd.offsets.MonthEnd(1)).day
+        weeks_in = days_in / 7.0
 
         if is_part:
-            rem      = days_in - latest_day
-            frac_rem = rem / days_in
-            # Remaining inflows pro-rata from LY core receipts
-            rem_in  = ly_inflow  * frac_rem
-            # Non-AP outflows pro-rata (these will happen regardless)
-            rem_fix = ly_non_ap  * frac_rem
-            # What's been paid in AP already this month
-            ap_mtd  = abs(safe_get(uk_out_spec, fyr, fmn, 'AP COGS')) +                       abs(safe_get(uk_out_spec, fyr, fmn, 'AP OVH'))
-            # Max AP remaining = room after fixed costs, hitting forecast close
-            allow_ap_rem = open_cash + rem_in - fc_close - rem_fix
-            allow_ap     = max(0, allow_ap_rem - ap_mtd)
+            rem       = days_in - latest_day
+            frac_rem  = rem / days_in
+            weeks_rem = rem / 7.0
+            # Remaining inflows = LY full month × fraction remaining
+            rem_in    = ly_inflow * frac_rem
+            # Remaining fixed outflows
+            rem_fixed = ly_fixed  * frac_rem
+            # AP already paid this month
+            ap_mtd    = (abs(safe_get(uk_out_spec, fyr, fmn, 'AP COGS')) +
+                         abs(safe_get(uk_out_spec, fyr, fmn, 'AP OVH')))
+            # Total AP budget for month:
+            # opening + expected remaining inflows - forecast close - remaining fixed
+            # Subtract already-paid AP to get remaining AP capacity
+            total_ap_budget = open_cash + rem_in - fc_close - rem_fixed
+            allow_ap_remain = max(0, total_ap_budget - ap_mtd)
+            # Weekly AP capacity for remaining weeks
+            allow_ap_per_wk = allow_ap_remain / max(weeks_rem, 0.5)
         else:
-            rem      = days_in
-            frac_rem = 1.0
-            rem_in   = ly_inflow
-            rem_fix  = ly_non_ap
-            ap_mtd   = 0.0
-            allow_ap = max(0, open_cash + rem_in - fc_close - rem_fix)
+            rem       = days_in
+            frac_rem  = 1.0
+            weeks_rem = weeks_in
+            rem_in    = ly_inflow
+            rem_fixed = ly_fixed
+            ap_mtd    = 0.0
+            total_ap_budget  = open_cash + rem_in - fc_close - rem_fixed
+            allow_ap_remain  = max(0, total_ap_budget)
+            allow_ap_per_wk  = allow_ap_remain / weeks_in
 
-        # CY actuals for current month (partial) — for context
-        cy_inflow_mtd = sum(safe_get(uk_in_spec,  fyr, fmn, c) for c in INFLOW_CORE if c in uk_in_spec.columns)
-        cy_ap_mtd     = abs(safe_get(uk_out_spec, fyr, fmn, 'AP COGS')) +                         abs(safe_get(uk_out_spec, fyr, fmn, 'AP OVH')) if is_part else 0.0
+        # CY actuals to date
+        cy_inflow_mtd = sum(safe_get(uk_in_spec, fyr, fmn, c)
+                            for c in INFLOW_CORE if c in uk_in_spec.columns)
 
-        hold_vs_ly    = max(0, ly_ap_total * frac_rem - allow_ap)
+        # How much to hold vs LY run rate
+        ly_ap_for_period = ly_ap_total * frac_rem
+        hold_vs_ly       = max(0, ly_ap_for_period - allow_ap_remain)
+        ly_ap_per_wk     = ly_ap_total / weeks_in
+
         badge = "🚨 Breach" if hpct < 0 else ("⚠️ Monitor" if hpct < 0.20 else "✅ On track")
 
         with cols[ci]:
             st.markdown(f"### {MN[fmn]} {fyr}  {badge}")
             if is_part:
-                st.caption(f"Current month — {latest_day} of {days_in} days elapsed · {days_in - latest_day} days remaining")
+                st.caption(
+                    f"**{latest_day} of {days_in} days elapsed · "
+                    f"{rem} days / ~{weeks_rem:.1f} weeks remaining**"
+                )
 
-            # ── Cash position ─────────────────────────────────────────────────
+            # ── Cash snapshot ─────────────────────────────────────────────────
             st.markdown("**Cash position**")
             st.markdown(
-                f"| | |\n|---|---|\n"
+                "| | |\n|---|---|\n"
                 f"| Opening balance | {fmt(open_cash)} |\n"
                 f"| Forecast close | **{fmt(fc_close)}** |\n"
-                f"| UK required (70%) | {fmt(uk_req)} |\n"
-                f"| Headroom vs req | **{fmt(headroom)}** ({hpct:.0%}) |"
+                f"| UK required | {fmt(uk_req)} |\n"
+                f"| Headroom | **{fmt(headroom)}** ({hpct:.0%}) |"
             )
 
             # ── Receipts ──────────────────────────────────────────────────────
-            st.markdown("**Expected receipts (LY core — Direct, Agent, FD)**")
-            rows_rec = (
-                f"| | LY full month | {'Remaining est.' if is_part else 'Full month'} |\n"
-                f"|---|---|---|\n"
-                f"| Direct + Agent + FD | {fmt(ly_inflow)} | {fmt(rem_in)} |"
+            st.markdown("**Expected receipts** (Direct + Agent + FD, LY basis)")
+            st.markdown(
+                "| | LY full month | " + ("Remaining est." if is_part else "Full month") + " |\n"
+                "|---|---|---|\n"
+                f"| Core receipts | {fmt(ly_inflow)} | {fmt(rem_in)} |"
+                + (f"\n| CY actual to date | | {fmt(cy_inflow_mtd)} |" if is_part else "")
             )
-            if is_part:
-                rows_rec += f"\n| CY actual to date | | {fmt(cy_inflow_mtd)} |"
-            st.markdown(rows_rec)
 
-            # ── Supplier payment capacity — THE KEY LEVER ─────────────────────
-            st.markdown("**🔑 Supplier payment capacity (AP COGS + OVH)**")
-            col_a, col_b = st.columns(2)
-            col_a.metric("LY AP same month",  fmt(ly_ap_total * frac_rem),
-                         delta="prior year run rate", delta_color="off")
-            col_b.metric("Max AP can release", fmt(allow_ap),
-                         delta=f"{'hold '+fmt(hold_vs_ly)+' vs LY' if hold_vs_ly > 50000 else '✅ can run at LY pace'}",
-                         delta_color="off" if hold_vs_ly <= 50000 else "inverse")
-            if is_part and ap_mtd > 0:
-                st.caption(f"Already paid this month: {fmt(ap_mtd)}")
+            # ── AP PAYMENT CAPACITY — THE KEY NUMBER ─────────────────────────
+            st.markdown("---")
+            st.markdown("### 🔑 AP payment capacity")
 
             if hold_vs_ly > 50000:
-                st.error(f"🚨 Hold back **{fmt(hold_vs_ly)}** of AP vs LY run rate to hit forecast close")
+                st.error(
+                    f"**Hold back {fmt(hold_vs_ly)} vs LY run rate** to hit forecast close"
+                )
             else:
-                st.success("✅ AP can run at prior year levels")
+                st.success("✅ AP can run at LY pace — no hold back required")
 
-            # ── Fixed outflows ─────────────────────────────────────────────────
-            with st.expander("Fixed outflows (for reference)"):
+            # Monthly budget
+            m1, m2 = st.columns(2)
+            m1.metric(
+                "Total AP budget this " + ("month (remaining)" if is_part else "month"),
+                fmt(allow_ap_remain),
+                delta=f"LY same period: {fmt(ly_ap_for_period)}",
+                delta_color="off"
+            )
+            m2.metric(
+                "Weekly AP capacity",
+                fmt(allow_ap_per_wk),
+                delta=f"LY weekly avg: {fmt(ly_ap_per_wk)}",
+                delta_color="off"
+            )
+            if is_part and ap_mtd > 0:
+                st.caption(
+                    f"AP COGS + OVH already paid this month: **{fmt(ap_mtd)}** · "
+                    f"Remaining capacity: {fmt(allow_ap_remain)}"
+                )
+
+            # Breakdown: COGS vs OVH
+            if ly_ap_total > 0:
+                cogs_frac = ly_apcogs / ly_ap_total
+                ovh_frac  = ly_apovh  / ly_ap_total
+                allow_cogs = allow_ap_remain * cogs_frac
+                allow_ovh  = allow_ap_remain * ovh_frac
+                st.markdown(
+                    "| | LY run rate | Budget (" +
+                    ("remaining" if is_part else "full month") + ") |\n"
+                    "|---|---|---|\n"
+                    f"| AP COGS | {fmt(ly_apcogs * frac_rem)} | **{fmt(allow_cogs)}** |\n"
+                    f"| AP OVH  | {fmt(ly_apovh  * frac_rem)} | **{fmt(allow_ovh)}** |"
+                )
+
+            # ── Other outflows ─────────────────────────────────────────────────
+            st.markdown("---")
+            with st.expander("Other outflows (for reference — excluded from AP calc)"):
+                st.caption("FX trade out, interco and sweep are excluded — treasury flows, not operational.")
                 est_label = 'Remaining est.' if is_part else 'Full month'
                 st.markdown(
                     f"| Category | LY full month | {est_label} |\n"
                     f"|---|---|---|\n"
                     f"| Flight costs | {fmt(ly_flight)} | {fmt(ly_flight * frac_rem)} |\n"
-                    f"| Payroll & tax | {fmt(ly_payroll)} | {fmt(ly_payroll * frac_rem)} |\n"
-                    f"| Other | {fmt(ly_other)} | {fmt(ly_other * frac_rem)} |"
+                    f"| Payroll | {fmt(ly_payroll)} | {fmt(ly_payroll * frac_rem)} |\n"
+                    f"| Tax | {fmt(ly_tax)} | {fmt(ly_tax * frac_rem)} |"
                 )
 
 
@@ -975,134 +1022,125 @@ with tabs[5]:
 
     act_data = fc[fc['is_actual'] & ~fc['is_partial']]
 
-    # ── Build monthly data: total net (UK + Ireland), LY same month, forecast implied ──
+    # ── Build monthly data for driver callouts (actual months only) ───────────
     monthly_data = []
     for _, row in act_data.iterrows():
-        yr, mn   = int(row['Year']), int(row['Month'])
-        label    = f"{MN[mn]} {yr}"
-        ly_label = f"{MN[mn]} {yr-1}"
-
-        # Total actual net (UK + Ireland)
-        uk_in   = safe_entity(entity_m, yr, mn, 'UK',      'inflow')
-        uk_out  = safe_entity(entity_m, yr, mn, 'UK',      'outflow')
-        ie_in   = safe_entity(entity_m, yr, mn, 'Ireland', 'inflow')
-        ie_out  = safe_entity(entity_m, yr, mn, 'Ireland', 'outflow')
+        yr, mn  = int(row['Year']), int(row['Month'])
+        uk_in   = safe_entity(entity_m, yr,   mn, 'UK',      'inflow')
+        uk_out  = safe_entity(entity_m, yr,   mn, 'UK',      'outflow')
+        ie_in   = safe_entity(entity_m, yr,   mn, 'Ireland', 'inflow')
+        ie_out  = safe_entity(entity_m, yr,   mn, 'Ireland', 'outflow')
         tot_net = uk_in + uk_out + ie_in + ie_out
-
-        # Prior year same month total
         ly_uk_in  = safe_entity(entity_m, yr-1, mn, 'UK',      'inflow')
         ly_uk_out = safe_entity(entity_m, yr-1, mn, 'UK',      'outflow')
         ly_ie_in  = safe_entity(entity_m, yr-1, mn, 'Ireland', 'inflow')
         ly_ie_out = safe_entity(entity_m, yr-1, mn, 'Ireland', 'outflow')
-        ly_net    = ly_uk_in + ly_uk_out + ly_ie_in + ly_ie_out
-
-        # Forecast implied net (month-on-month change in Book2 total cash)
-        fc_imp_uk = float(row.get('fc_implied_net', 0) or 0)
-        # Approximate total forecast implied using UK as primary driver
-        fc_imp_tot = fc_imp_uk
-
-        # YoY variance (vs LY same month) — only if LY data exists
-        yoy_var    = tot_net - ly_net if abs(ly_net) > 100000 else None
-
-        # Forecast variance (actual vs Book2 implied)
-        fc_var     = tot_net - fc_imp_tot if abs(fc_imp_tot) > 100000 else None
-
-        # Driver analysis — compare key categories vs LY (>15% change = notable)
-        drivers = []
-        driver_checks = [
-            ('FD receipts',   'FD RECEIPT',    uk_in_spec,  True),
-            ('Agent receipts','AGENT RECEIPTS', uk_in_spec,  True),
-            ('FX inflows',    'FX TRADE IN',   uk_in_spec,  True),
-            ('AP COGS',       'AP COGS',        uk_out_spec, False),
-            ('Flight costs',  'FLIGHT COSTS',  uk_out_spec, False),
-            ('FX outflows',   'FX TRADE OUT',  uk_out_spec, False),
-        ]
-        for dlabel, cat, spec, is_in in driver_checks:
+        ly_net   = ly_uk_in + ly_uk_out + ly_ie_in + ly_ie_out
+        fc_imp   = float(row.get('fc_implied_net', 0) or 0)
+        yoy_var  = tot_net - ly_net if abs(ly_net) > 100000 else None
+        drivers  = []
+        for dlabel, cat, spec, is_in in [
+            ('FD receipts',    'FD RECEIPT',    uk_in_spec,  True),
+            ('Agent receipts', 'AGENT RECEIPTS',uk_in_spec,  True),
+            ('Direct receipts','DIRECT RECEIPTS',uk_in_spec, True),
+            ('AP COGS',        'AP COGS',       uk_out_spec, False),
+            ('AP OVH',         'AP OVH',        uk_out_spec, False),
+            ('Flight costs',   'FLIGHT COSTS',  uk_out_spec, False),
+            ('Payroll',        'PAYROLL',       uk_out_spec, False),
+        ]:
             cy_v = safe_get(spec, yr,   mn, cat)
             ly_v = safe_get(spec, yr-1, mn, cat)
             if not is_in: cy_v = abs(cy_v); ly_v = abs(ly_v)
-            if ly_v > 100000:
-                chg = (cy_v - ly_v) / ly_v
-                if is_in:
-                    if chg >  0.20: drivers.append((dlabel, chg, 'up',   cy_v, ly_v))
-                    if chg < -0.20: drivers.append((dlabel, chg, 'down', cy_v, ly_v))
-                else:
-                    if chg >  0.20: drivers.append((dlabel, chg, 'up',   cy_v, ly_v))
-                    if chg < -0.20: drivers.append((dlabel, chg, 'down', cy_v, ly_v))
-
+            if ly_v > 100000 and abs((cy_v-ly_v)/ly_v) > 0.20:
+                drivers.append((dlabel, (cy_v-ly_v)/ly_v,
+                                'up' if cy_v > ly_v else 'down', cy_v, ly_v))
         monthly_data.append({
-            'label': label, 'yr': yr, 'mn': mn,
-            'tot_net': tot_net, 'ly_net': ly_net,
-            'fc_imp': fc_imp_tot,
-            'yoy_var': yoy_var, 'fc_var': fc_var,
-            'drivers': drivers,
-            'uk_in': uk_in, 'uk_out': uk_out,
-            'ie_in': ie_in, 'ie_out': ie_out,
+            'label': f"{MN[mn]} {yr}", 'yr': yr, 'mn': mn,
+            'tot_net': tot_net, 'ly_net': ly_net, 'fc_imp': fc_imp,
+            'yoy_var': yoy_var, 'drivers': drivers,
+            'uk_in': uk_in, 'uk_out': uk_out, 'ie_in': ie_in, 'ie_out': ie_out,
         })
+
+    # ── Extended chart data: actuals + forecast ───────────────────────────────
+    fc_ext = fc.copy()
+    fc_ext['fc_implied_net'] = fc_ext['cash_uk'].diff()
+    all_labels_c, all_act_c, all_fc_c, all_ly_c, all_is_act_c = [], [], [], [], []
+    for _, row in fc_ext.iterrows():
+        yr, mn  = int(row['Year']), int(row['Month'])
+        is_act  = bool(row['is_actual']) and not bool(row.get('is_partial', False))
+        fc_imp  = float(row.get('fc_implied_net', 0) or 0)
+        ly_net  = (safe_entity(entity_m, yr-1, mn, 'UK', 'inflow') +
+                   safe_entity(entity_m, yr-1, mn, 'UK', 'outflow') +
+                   safe_entity(entity_m, yr-1, mn, 'Ireland', 'inflow') +
+                   safe_entity(entity_m, yr-1, mn, 'Ireland', 'outflow')) / 1e6
+        if is_act:
+            act_net = (safe_entity(entity_m, yr, mn, 'UK', 'inflow') +
+                       safe_entity(entity_m, yr, mn, 'UK', 'outflow') +
+                       safe_entity(entity_m, yr, mn, 'Ireland', 'inflow') +
+                       safe_entity(entity_m, yr, mn, 'Ireland', 'outflow')) / 1e6
+        else:
+            act_net = None
+        all_labels_c.append(f"{MN[mn]} {yr}")
+        all_act_c.append(act_net)
+        all_fc_c.append(fc_imp / 1e6 if abs(fc_imp) > 0 else None)
+        all_ly_c.append(ly_net if abs(ly_net) > 0.1 else None)
+        all_is_act_c.append(is_act)
 
     if not monthly_data:
         st.info("No complete actual months available yet.")
     else:
-        labels_m   = [d['label']         for d in monthly_data]
-        tot_nets   = [d['tot_net']/1e6   for d in monthly_data]
-        ly_nets    = [d['ly_net']/1e6    for d in monthly_data]
-        fc_imps    = [d['fc_imp']/1e6    for d in monthly_data]
-        yoy_vars   = [d['yoy_var']/1e6 if d['yoy_var'] is not None else None for d in monthly_data]
-
-        # ── Chart 1: Total net cash — CY vs LY vs Forecast implied ───────────
-        st.subheader("Monthly net cash — total group (UK + Ireland)")
-        fig_or = go.Figure()
-
-        # CY actual bars
-        bar_colors = [GREEN if v >= 0 else RED for v in tot_nets]
+        # ── Chart 1: Total net cash — actuals + forecast vs LY ───────────────
+        st.subheader("Monthly net cash — total group (UK + Ireland) · actuals + forecast")
+        fig_or  = go.Figure()
+        bar_vals   = [all_act_c[i] if all_act_c[i] is not None else all_fc_c[i]
+                      for i in range(len(all_labels_c))]
+        bar_colors = []
+        for i in range(len(all_labels_c)):
+            v = bar_vals[i] or 0
+            if all_act_c[i] is not None:
+                bar_colors.append(GREEN if v >= 0 else RED)
+            else:
+                bar_colors.append('rgba(24,95,165,0.35)' if v >= 0 else 'rgba(226,75,74,0.35)')
         fig_or.add_trace(go.Bar(
-            x=labels_m, y=tot_nets,
-            name='CY actual (total)',
-            marker_color=bar_colors,
-            opacity=0.85
-        ))
-        # LY same month line
+            x=all_labels_c, y=bar_vals,
+            name='Actual (solid) / Forecast (faded)',
+            marker_color=bar_colors, opacity=0.9))
         fig_or.add_trace(go.Scatter(
-            x=labels_m, y=ly_nets,
+            x=all_labels_c, y=all_ly_c,
             name='Prior year same month',
             line=dict(color=AMBER, width=2, dash='dot'),
-            mode='lines+markers', marker=dict(size=5)
-        ))
-        # Forecast implied line
-        fc_imp_clean = [v if abs(v) > 0.01 else None for v in fc_imps]
-        fig_or.add_trace(go.Scatter(
-            x=labels_m, y=fc_imp_clean,
-            name='Forecast implied (Book2)',
-            line=dict(color=LBLUE, width=2, dash='dash'),
-            mode='lines+markers', marker=dict(size=4)
-        ))
+            mode='lines+markers', marker=dict(size=4), connectgaps=False))
+        # Boundary line
+        last_act_lbl = [l for l, a in zip(all_labels_c, all_is_act_c) if a]
+        if last_act_lbl:
+            fig_or.add_vline(x=last_act_lbl[-1], line_color='rgba(0,0,0,0.25)',
+                             line_dash='dash', line_width=1,
+                             annotation_text='← actual | forecast →',
+                             annotation_position='top')
         fig_or.add_hline(y=0, line_color='rgba(0,0,0,0.2)', line_width=0.8)
         fig_or.update_layout(
-            height=300, plot_bgcolor='white', paper_bgcolor='white',
+            height=320, plot_bgcolor='white', paper_bgcolor='white',
             yaxis=dict(tickformat=',.1f', ticksuffix='m', gridcolor=GREY, title='£m'),
+            xaxis=dict(tickangle=45),
             legend=dict(orientation='h', yanchor='bottom', y=1.02, font=dict(size=10)),
-            margin=dict(l=0, r=0, t=30, b=0)
-        )
+            margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_or, use_container_width=True)
 
-        # ── Chart 2: YoY variance by month ───────────────────────────────────
-        st.subheader("Year-on-year variance — CY vs prior year same month")
-        yoy_clean = [v if v is not None else 0 for v in yoy_vars]
-        yoy_colors = [GREEN if v >= 0 else RED for v in yoy_clean]
+        # ── Chart 2: YoY variance — actual months only ───────────────────────
+        st.subheader("Year-on-year variance — actual months (CY vs prior year same month)")
+        labels_m   = [d['label'] for d in monthly_data]
+        yoy_clean  = [d['yoy_var']/1e6 if d['yoy_var'] is not None else 0
+                      for d in monthly_data]
         fig_yoy = go.Figure(go.Bar(
             x=labels_m, y=yoy_clean,
-            marker_color=yoy_colors,
-            name='YoY variance',
-            text=[f"+{v:.1f}m" if v >= 0 else f"{v:.1f}m" for v in yoy_clean],
-            textposition='outside'
-        ))
+            marker_color=[GREEN if v >= 0 else RED for v in yoy_clean],
+            text=[f"{'+' if v >= 0 else ''}{v:.1f}m" for v in yoy_clean],
+            textposition='outside'))
         fig_yoy.add_hline(y=0, line_color='rgba(0,0,0,0.2)', line_width=0.8)
         fig_yoy.update_layout(
             height=240, plot_bgcolor='white', paper_bgcolor='white',
             yaxis=dict(tickformat=',.1f', ticksuffix='m', gridcolor=GREY, title='£m vs LY'),
-            margin=dict(l=0, r=0, t=10, b=0),
-            showlegend=False
-        )
+            margin=dict(l=0, r=0, t=10, b=0), showlegend=False)
         st.plotly_chart(fig_yoy, use_container_width=True)
 
         # ── Driver callouts ───────────────────────────────────────────────────
@@ -1379,6 +1417,71 @@ with tabs[6]:
     display_rows.append({'_kind': 'sep', '_label': '', 'Row': '', **{h: '' for h in wk_hdrs}})
     dr('Net cash',        net,    'total')
     dr('Closing balance', closes, 'balance')
+
+    # ── Book2 month-end targets — show in the last week of each calendar month ─
+    # For each week column, find if it's the last week whose WeekStart falls in
+    # a given month, then show Book2 forecast close / client money / headroom.
+    # Only shown once per month (the week that closes out that month).
+
+    def get_book2_for_week(wk):
+        """Return (fc_close_k, client_money_k, headroom_k) for the month containing wk,
+        but only if wk is the LAST week in that calendar month among all_weeks."""
+        mn = wk.month; yr = wk.year
+        # Last week in all_weeks that falls in this month
+        wks_in_month = [w for w in all_weeks if w.month == mn and w.year == yr]
+        if not wks_in_month or wk != max(wks_in_month):
+            return None, None, None
+        # Look up Book2
+        book2_row = fc[(fc['Year'] == yr) & (fc['Month'] == mn)]
+        if book2_row.empty:
+            return None, None, None
+        row = book2_row.iloc[0]
+        fc_close_k  = float(row['cash_uk'])      / 1000
+        cm_k        = float(row['client_money'])  / 1000
+        headroom_k  = float(row['uk_headroom'])   / 1000
+        return fc_close_k, cm_k, headroom_k
+
+    b2_fc_close  = []
+    b2_cm        = []
+    b2_headroom  = []
+    b2_variance  = []   # closing balance (running) minus Book2 month-end target
+    for i, wk in enumerate(all_weeks):
+        fc_c, cm_c, hr_c = get_book2_for_week(wk)
+        b2_fc_close.append(fc_c)
+        b2_cm.append(cm_c)
+        b2_headroom.append(hr_c)
+        # Variance: only meaningful where Book2 target exists
+        if fc_c is not None:
+            b2_variance.append(closes[i] - fc_c)
+        else:
+            b2_variance.append(None)
+
+    # Format helpers for these rows (show '—' where no month-end target)
+    def fkw_me(v):
+        if v is None: return ''     # blank — not end of month
+        return fkw(v, dash=False)
+
+    def fkw_var(v):
+        if v is None: return ''
+        if abs(v) < 1: return '—'
+        prefix = '+' if v > 0 else ''
+        return f"{prefix}{fkw(v, dash=False)}"
+
+    # Add separator then month-end tracking rows
+    display_rows.append({'_kind': 'sep', '_label': '', 'Row': '', **{h: '' for h in wk_hdrs}})
+    display_rows.append({'_kind': 'header', '_label': 'MONTH-END TRACKING',
+                         'Row': 'MONTH-END TRACKING (Book2)', **{h: '' for h in wk_hdrs}})
+
+    def dr_me(label, vals_fn, kind='forecast'):
+        row = {'Row': label}
+        for i in range(N_W):
+            row[wk_hdrs[i]] = vals_fn(i)
+        display_rows.append({'_kind': kind, '_label': label, **row})
+
+    dr_me('Book2 forecast close',   lambda i: fkw_me(b2_fc_close[i]),  'forecast')
+    dr_me('Client money',           lambda i: fkw_me(b2_cm[i]),         'forecast')
+    dr_me('UK headroom vs req',     lambda i: fkw_me(b2_headroom[i]),   'forecast')
+    dr_me('Variance vs Book2 close',lambda i: fkw_var(b2_variance[i]),  'variance')
 
     df_display = pd.DataFrame(
         [{k: v for k, v in r.items() if not k.startswith('_')} for r in display_rows]
