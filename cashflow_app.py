@@ -753,20 +753,117 @@ def _build_shared_closes(weekly_raw, od_weekly, fc_weeks, fc_base, fc,
 if 'weekly_ov' not in st.session_state:
     st.session_state.weekly_ov = {}
 
-_shared_all_weeks, _shared_closes_k = _build_shared_closes(
-    weekly_raw, od_weekly, fc_weeks, fc_base, fc,
-    adj_receipts, adj_payments,
-    use_actual_pos, pos_total_uk, latest_mn, latest_yr)
-
 def shared_month_end_close(yr, mn):
     """Return weekly-outlook closing balance (£) at end of given month.
-    Uses the pre-tab chain which includes all overrides and sliders.
-    This runs before any tab renders so is always consistent."""
-    wks = [(i, w) for i, w in enumerate(_shared_all_weeks)
+    Reads directly from the shared closes[] array (£k) built pre-tab."""
+    wks = [(i, w) for i, w in enumerate(all_weeks)
            if w.year == yr and w.month == mn]
     if not wks: return None
     last_i = max(wks, key=lambda x: x[0])[0]
-    return _shared_closes_k[last_i] * 1000   # £k → £
+    return closes[last_i] * 1000   # £k → £
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SHARED WEEKLY DATA — computed before tabs so both 3-Month Focus and Weekly
+# 4+13 tabs read from exactly the same arrays (data, opens, closes).
+# ══════════════════════════════════════════════════════════════════════════════
+if 'weekly_ov' not in st.session_state:
+    st.session_state.weekly_ov = {}
+
+n_actuals    = 4
+actual_weeks = weekly_raw.index[-n_actuals:].tolist()
+all_weeks    = actual_weeks + fc_weeks
+N_W          = len(all_weeks)
+
+# Opening balance: use actual cash position if entered, else fall back to Book2
+first_wk     = actual_weeks[0]
+book2_before = fc[fc.index < first_wk]
+book2_open   = float(book2_before.iloc[-1]['cash_uk']) / 1000 if not book2_before.empty else 0.0
+if use_actual_pos:
+    # Use total UK GBP equiv entered in sidebar (SHT + TMD)
+    # Divide by 1000 as weekly table works in £k
+    open_base = pos_total_uk / 1000
+else:
+    open_base = book2_open
+
+ROW_SPECS = [
+    ('DIRECT RECEIPTS', 'DIRECT RECEIPTS',  False),
+    ('AGENT RECEIPTS',  'AGENT RECEIPTS',   False),
+    ('FD RECEIPT',      'FD RECEIPT',        False),
+    ('CUSTOMER REFUND', 'CUSTOMER REFUNDS',  False),
+    ('TUI RECEIPT',     'TUI RECEIPT',       False),
+    ('OTHER RECEIPT',   'OTHER RECEIPTS',    True),  # blank — unpredictable
+    ('FX TRADE IN',     'FX TRADE IN',       True),  # blank — treasury/lumpy
+    ('INTERCO (net)',   'INTERCO',           True),  # blank — net zero assumed
+    ('OD INTEREST',     '_OD',               False),
+    ('AP COGS',         'AP COGS',           False),
+    ('AP OVH',          'AP OVH',            False),
+    ('PAYROLL',         'PAYROLL',           False),
+    ('TAX',             'TAX',               False),
+    ('OTHER CASH OUT',  'OTHER COSTS',       True),  # blank — unpredictable
+    ('FX TRADE OUT',    'FX TRADE OUT',      True),  # blank — treasury/lumpy
+    ('FLIGHT COSTS',    'FLIGHT COSTS',      False),
+]
+RECEIPT_LABELS = ['DIRECT RECEIPTS','AGENT RECEIPTS','FD RECEIPT','CUSTOMER REFUND',
+                  'TUI RECEIPT','OTHER RECEIPT','FX TRADE IN','INTERCO (net)','OD INTEREST']
+PAYMENT_LABELS = ['AP COGS','AP OVH','PAYROLL','TAX','OTHER CASH OUT','FX TRADE OUT','FLIGHT COSTS']
+
+# Rows affected by the sidebar adjustment sliders
+# (only core receipts and AP — not FX, interco, payroll, flight, tax)
+SLIDER_RECEIPT_ROWS = {'DIRECT RECEIPTS', 'AGENT RECEIPTS', 'FD RECEIPT', 'TUI RECEIPT'}
+SLIDER_AP_ROWS      = {'AP COGS', 'AP OVH'}
+
+# All forecast weeks — sliders apply across the full 13-week outlook
+current_month_fc_weeks = set(range(n_actuals, N_W))
+
+data = {}
+for label, spec, blank_fc in ROW_SPECS:
+    row = []
+    for i, wk in enumerate(all_weeks):
+        ov_key = f"{label}_{i}"
+        if ov_key in st.session_state.weekly_ov:
+            row.append(st.session_state.weekly_ov[ov_key] / 1000)
+            continue
+        is_fc_wk = i >= n_actuals
+        if not is_fc_wk:
+            if spec == '_OD':
+                v = float(od_weekly.get(wk, 0)) / 1000
+            elif spec in weekly_raw.columns and wk in weekly_raw.index:
+                v = float(weekly_raw.loc[wk, spec]) / 1000
+            else:
+                v = 0.0
+        else:
+            if blank_fc:
+                v = 0.0
+            elif spec == '_OD':
+                v = 11.0
+            elif spec == 'PAYROLL':
+                v = fc_base.get('PAYROLL', [0]*13)[i - n_actuals] / 1000
+            else:
+                v = fc_base.get(spec, [0]*13)[i - n_actuals] / 1000 if spec else 0.0
+
+            # Apply slider adjustments across all 13 forecast weeks
+            if i in current_month_fc_weeks:
+                if label in SLIDER_RECEIPT_ROWS and adj_receipts != 0:
+                    v = v * (1 + adj_receipts / 100)
+                elif label in SLIDER_AP_ROWS and adj_payments != 0:
+                    v = v * (1 + adj_payments / 100)
+
+        row.append(round(v, 1))
+    data[label] = row
+
+totR  = [sum(data[l][i] for l in RECEIPT_LABELS) for i in range(N_W)]
+totP  = [sum(data[l][i] for l in PAYMENT_LABELS) for i in range(N_W)]
+net   = [totR[i] + totP[i] for i in range(N_W)]
+opens = [0.0] * N_W;  closes = [0.0] * N_W
+opens[0]  = open_base
+closes[0] = open_base + net[0]
+for i in range(1, N_W):
+    opens[i]  = closes[i-1]
+    closes[i] = closes[i-1] + net[i]
+
+# aliases used by shared_month_end_close — defined here after closes is built
+_shared_all_weeks = all_weeks
+_shared_closes_k  = closes
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tabs = st.tabs([
@@ -989,17 +1086,11 @@ with tabs[4]:
     # ── Use shared weekly close chain (includes overrides + sliders) ─────────────
     _wk_outlook_month_close = shared_month_end_close
 
-    _hdr, _btn = st.columns([8, 1])
-    with _hdr:
-        st.caption(
-            f"Bank data to **{latest_date.strftime('%d %b %Y')}**. "
-            f"Current month ({MN[latest_mn]} {latest_yr}) + next 2. "
-            f"Weekly outlook uses latest overrides and sliders from the 4+13 tab."
-        )
-    with _btn:
-        if st.button("🔄 Refresh", key="refresh_3mo",
-                     help="Reloads the page so weekly outlook reflects any changes made in the 4+13 tab"):
-            st.rerun()
+    st.caption(
+        f"Bank data to **{latest_date.strftime('%d %b %Y')}**. "
+        f"Current month ({MN[latest_mn]} {latest_yr}) + next 2. "
+        f"Weekly outlook reflects current overrides and sliders — same data as 4+13 tab."
+    )
 
     cols = st.columns(3)
     for ci, (fyr, fmn) in enumerate(focus_months):
@@ -1457,104 +1548,8 @@ with tabs[6]:
         f"OD interest: actual net for actuals / £11k/week forecast."
     )
 
-    if 'weekly_ov' not in st.session_state:
-        st.session_state.weekly_ov = {}
+    # Data, opens, closes computed in shared pre-tab block below tabs definition
 
-    n_actuals    = 4
-    actual_weeks = weekly_raw.index[-n_actuals:].tolist()
-    all_weeks    = actual_weeks + fc_weeks
-    N_W          = len(all_weeks)
-
-    # Opening balance: use actual cash position if entered, else fall back to Book2
-    first_wk     = actual_weeks[0]
-    book2_before = fc[fc.index < first_wk]
-    book2_open   = float(book2_before.iloc[-1]['cash_uk']) / 1000 if not book2_before.empty else 0.0
-    if use_actual_pos:
-        # Use total UK GBP equiv entered in sidebar (SHT + TMD)
-        # Divide by 1000 as weekly table works in £k
-        open_base = pos_total_uk / 1000
-    else:
-        open_base = book2_open
-
-    ROW_SPECS = [
-        ('DIRECT RECEIPTS', 'DIRECT RECEIPTS',  False),
-        ('AGENT RECEIPTS',  'AGENT RECEIPTS',   False),
-        ('FD RECEIPT',      'FD RECEIPT',        False),
-        ('CUSTOMER REFUND', 'CUSTOMER REFUNDS',  False),
-        ('TUI RECEIPT',     'TUI RECEIPT',       False),
-        ('OTHER RECEIPT',   'OTHER RECEIPTS',    True),  # blank — unpredictable
-        ('FX TRADE IN',     'FX TRADE IN',       True),  # blank — treasury/lumpy
-        ('INTERCO (net)',   'INTERCO',           True),  # blank — net zero assumed
-        ('OD INTEREST',     '_OD',               False),
-        ('AP COGS',         'AP COGS',           False),
-        ('AP OVH',          'AP OVH',            False),
-        ('PAYROLL',         'PAYROLL',           False),
-        ('TAX',             'TAX',               False),
-        ('OTHER CASH OUT',  'OTHER COSTS',       True),  # blank — unpredictable
-        ('FX TRADE OUT',    'FX TRADE OUT',      True),  # blank — treasury/lumpy
-        ('FLIGHT COSTS',    'FLIGHT COSTS',      False),
-    ]
-    RECEIPT_LABELS = ['DIRECT RECEIPTS','AGENT RECEIPTS','FD RECEIPT','CUSTOMER REFUND',
-                      'TUI RECEIPT','OTHER RECEIPT','FX TRADE IN','INTERCO (net)','OD INTEREST']
-    PAYMENT_LABELS = ['AP COGS','AP OVH','PAYROLL','TAX','OTHER CASH OUT','FX TRADE OUT','FLIGHT COSTS']
-
-    # Rows affected by the sidebar adjustment sliders
-    # (only core receipts and AP — not FX, interco, payroll, flight, tax)
-    SLIDER_RECEIPT_ROWS = {'DIRECT RECEIPTS', 'AGENT RECEIPTS', 'FD RECEIPT', 'TUI RECEIPT'}
-    SLIDER_AP_ROWS      = {'AP COGS', 'AP OVH'}
-
-    # All forecast weeks — sliders apply across the full 13-week outlook
-    current_month_fc_weeks = set(range(n_actuals, N_W))
-
-    data = {}
-    for label, spec, blank_fc in ROW_SPECS:
-        row = []
-        for i, wk in enumerate(all_weeks):
-            ov_key = f"{label}_{i}"
-            if ov_key in st.session_state.weekly_ov:
-                row.append(st.session_state.weekly_ov[ov_key] / 1000)
-                continue
-            is_fc_wk = i >= n_actuals
-            if not is_fc_wk:
-                if spec == '_OD':
-                    v = float(od_weekly.get(wk, 0)) / 1000
-                elif spec in weekly_raw.columns and wk in weekly_raw.index:
-                    v = float(weekly_raw.loc[wk, spec]) / 1000
-                else:
-                    v = 0.0
-            else:
-                if blank_fc:
-                    v = 0.0
-                elif spec == '_OD':
-                    v = 11.0
-                elif spec == 'PAYROLL':
-                    v = fc_base.get('PAYROLL', [0]*13)[i - n_actuals] / 1000
-                else:
-                    v = fc_base.get(spec, [0]*13)[i - n_actuals] / 1000 if spec else 0.0
-
-                # Apply slider adjustments across all 13 forecast weeks
-                if i in current_month_fc_weeks:
-                    if label in SLIDER_RECEIPT_ROWS and adj_receipts != 0:
-                        v = v * (1 + adj_receipts / 100)
-                    elif label in SLIDER_AP_ROWS and adj_payments != 0:
-                        v = v * (1 + adj_payments / 100)
-
-            row.append(round(v, 1))
-        data[label] = row
-
-    totR  = [sum(data[l][i] for l in RECEIPT_LABELS) for i in range(N_W)]
-    totP  = [sum(data[l][i] for l in PAYMENT_LABELS) for i in range(N_W)]
-    net   = [totR[i] + totP[i] for i in range(N_W)]
-    opens = [0.0] * N_W;  closes = [0.0] * N_W
-    opens[0]  = open_base
-    closes[0] = open_base + net[0]
-    for i in range(1, N_W):
-        opens[i]  = closes[i-1]
-        closes[i] = closes[i-1] + net[i]
-
-    # Note: shared_month_end_close uses the pre-tab chain (_shared_closes_k)
-    # which is computed before any tab renders using the same overrides + sliders.
-    # No session state sync needed.
 
     # ── Override expander ─────────────────────────────────────────────────────
     ovr_labels = ['AP COGS','AP OVH','PAYROLL','FD RECEIPT','AGENT RECEIPTS',
