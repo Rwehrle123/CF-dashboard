@@ -29,6 +29,29 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── SHG brand styling ─────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* SHG navy primary colour on key interactive elements */
+div[data-testid="stTabs"] button[aria-selected="true"] {
+    color: #1C1464 !important;
+    border-bottom-color: #1C1464 !important;
+    font-weight: 600;
+}
+/* SHG gold accent on sidebar headers */
+section[data-testid="stSidebar"] h3,
+section[data-testid="stSidebar"] .stMarkdown strong {
+    color: #C9A84C;
+}
+/* SHG navy on metric labels */
+[data-testid="stMetricLabel"] { color: #1C1464 !important; }
+/* Gold dividers */
+hr { border-color: #C9A84C !important; opacity: 0.4; }
+/* SHG navy on dataframe header */
+thead tr th { background-color: #1C1464 !important; color: white !important; }
+</style>
+""", unsafe_allow_html=True)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ACCOUNT → ENTITY MAPPING  (hard-coded — no upload required)
 # Update this dict if accounts are added or entity changes.
@@ -94,8 +117,8 @@ WEEKLY_LOCK = {'PAYROLL'}
 MN = {1:'Jan', 2:'Feb', 3:'Mar', 4:'Apr',  5:'May',  6:'Jun',
       7:'Jul', 8:'Aug', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Dec'}
 
-BLUE   = '#185FA5'; GREEN  = '#3B6D11'; LBLUE  = '#378ADD'; LGREEN = '#639922'
-RED    = '#E24B4A'; AMBER  = '#EF9F27'; GREY   = 'rgba(0,0,0,0.06)'
+BLUE   = '#1C1464'  # SHG navy; GREEN  = '#3B6D11'; LBLUE  = '#3D3580'  # SHG navy light; LGREEN = '#639922'
+RED    = '#E24B4A'; AMBER  = '#C9A84C'  # SHG gold; GREY   = 'rgba(0,0,0,0.06)'
 DEFAULT_FX = {'EUR': 0.86, 'USD': 0.76, 'CAD': 0.53}
 
 
@@ -631,6 +654,119 @@ if use_actual_pos and still_to_collect is not None and room_to_pay is not None:
 
 st.divider()
 
+# ══════════════════════════════════════════════════════════════════════════════
+# SHARED WEEKLY CLOSE CHAIN
+# Computed once here, used by both the Weekly 4+13 tab and 3-Month Focus tab.
+# Includes session state overrides so both tabs see the same adjusted numbers.
+# ══════════════════════════════════════════════════════════════════════════════
+def _build_shared_closes(weekly_raw, fc_weeks, fc_base, fc,
+                          adj_receipts, adj_payments,
+                          use_actual_pos, pos_total_uk, latest_mn, latest_yr):
+    """Build the weekly closing balance chain, applying overrides and sliders.
+    Returns: (all_weeks, closes_k) where closes_k is in £k."""
+    n_act     = 4
+    act_wks   = weekly_raw.index[-n_act:].tolist()
+    all_wks   = act_wks + list(fc_weeks)
+    N         = len(all_wks)
+
+    CORE_IN   = ['DIRECT RECEIPTS','AGENT RECEIPTS','FD RECEIPT','TUI RECEIPT']
+    AP_ROWS   = ['AP COGS','AP OVH']
+    FIXED_OUT = ['PAYROLL','TAX','FLIGHT COSTS']
+    ALL_SPEC  = CORE_IN + AP_ROWS + FIXED_OUT
+
+    SLIDER_REC = set(CORE_IN)
+    SLIDER_AP  = set(AP_ROWS)
+
+    def base_val(spec, wk, i):
+        if i < n_act:
+            return float(weekly_raw.loc[wk, spec]) / 1000                    if spec in weekly_raw.columns and wk in weekly_raw.index else 0.0
+        else:
+            return fc_base.get(spec, [0]*13)[i - n_act] / 1000                    if spec in fc_base else 0.0
+
+    # Build row data respecting overrides and sliders
+    # Overrides stored in £ (not £k) — divide by 1000
+    ov = st.session_state.get('weekly_ov', {})
+    ROW_SPECS_SHARED = [
+        ('DIRECT RECEIPTS', False), ('AGENT RECEIPTS', False),
+        ('FD RECEIPT', False),      ('TUI RECEIPT',    False),
+        ('OTHER RECEIPT', True),    ('FX TRADE IN',    True),
+        ('INTERCO (net)', True),    ('OD INTEREST',    False),
+        ('AP COGS',       False),   ('AP OVH',         False),
+        ('PAYROLL',       False),   ('TAX',            False),
+        ('OTHER CASH OUT',True),    ('FX TRADE OUT',   True),
+        ('FLIGHT COSTS',  False),
+    ]
+
+    net_per_wk = []
+    for i, wk in enumerate(all_wks):
+        wk_net = 0.0
+        for label, blank_fc in ROW_SPECS_SHARED:
+            ov_key = f"{label}_{i}"
+            if ov_key in ov:
+                wk_net += ov[ov_key] / 1000
+                continue
+            if i < n_act:
+                spec = label if label != 'OD INTEREST' else None
+                if label == 'OD INTEREST':
+                    v = 0.0  # actuals OD timing too noisy for chain
+                elif spec and spec in weekly_raw.columns and wk in weekly_raw.index:
+                    v = float(weekly_raw.loc[wk, spec]) / 1000
+                else:
+                    v = 0.0
+            else:
+                if blank_fc:
+                    v = 0.0
+                elif label == 'OD INTEREST':
+                    v = 11.0
+                elif label == 'PAYROLL':
+                    v = fc_base.get('PAYROLL', [0]*13)[i - n_act] / 1000
+                else:
+                    v = fc_base.get(label, [0]*13)[i - n_act] / 1000                         if label in fc_base else 0.0
+                # Apply sliders to forecast weeks
+                if label in SLIDER_REC and adj_receipts != 0:
+                    v *= (1 + adj_receipts / 100)
+                elif label in SLIDER_AP and adj_payments != 0:
+                    v *= (1 + adj_payments / 100)
+            wk_net += v
+        net_per_wk.append(wk_net)
+
+    # Opening balance
+    book2_before = fc[fc.index < act_wks[0]]
+    open_k = (pos_total_uk / 1000) if use_actual_pos else              (float(book2_before.iloc[-1]['cash_uk']) / 1000
+              if not book2_before.empty else 0.0)
+
+    closes_k = [0.0] * N
+    closes_k[0] = open_k + net_per_wk[0]
+    for i in range(1, N):
+        closes_k[i] = closes_k[i-1] + net_per_wk[i]
+
+    return all_wks, closes_k
+
+
+# Initialise session state before computing (weekly tab also does this but we may run first)
+if 'weekly_ov' not in st.session_state:
+    st.session_state.weekly_ov = {}
+
+_shared_all_weeks, _shared_closes_k = _build_shared_closes(
+    weekly_raw, fc_weeks, fc_base, fc,
+    adj_receipts, adj_payments,
+    use_actual_pos, pos_total_uk, latest_mn, latest_yr)
+
+def shared_month_end_close(yr, mn):
+    """Return weekly-outlook closing balance (£) at end of given month.
+    Prefers the authoritative weekly tab chain (session state) if available,
+    falls back to the pre-tab approximation otherwise."""
+    # Use weekly tab's chain if it has been computed this session
+    all_wks_src  = st.session_state.get('_wk_all_weeks', _shared_all_weeks)
+    closes_src   = st.session_state.get('_wk_closes',    _shared_closes_k)
+    wks = [(i, w) for i, w in enumerate(all_wks_src)
+           if w.year == yr and w.month == mn]
+    if not wks: return None
+    last_i = max(wks, key=lambda x: x[0])[0]
+    v = closes_src[last_i]
+    # closes may be in £k (weekly tab) or £k (shared chain) — both are £k
+    return v * 1000   # back to £
+
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tabs = st.tabs([
     "📈 Cash vs Forecast",
@@ -787,8 +923,8 @@ def build_yoy_table(in_spec, out_spec, cats, is_out, entity_label):
                 total = sum(abs(safe_get(spec, yr, mn, c)) if is_out else safe_get(spec, yr, mn, c)
                             for c in cats if c in spec.columns)
                 vals.append(total / 1e6)
-            clr = ['rgba(136,135,128,0.55)', 'rgba(24,95,165,0.7)',
-                   'rgba(59,109,17,0.7)', 'rgba(239,159,39,0.7)'][yi % 4]
+            clr = ['rgba(136,135,128,0.55)', 'rgba(28,20,100,0.7)',
+                   'rgba(59,109,17,0.7)', 'rgba(201,168,76,0.7)'][yi % 4]
             fig.add_trace(go.Bar(x=[MN[m] for m in months_avail], y=vals,
                 name=str(yr), marker_color=clr, offsetgroup=yi))
         fig.update_layout(barmode='group', height=220,
@@ -849,54 +985,9 @@ with tabs[4]:
         while mn > 12: mn -= 12; yr += 1
         focus_months.append((yr, mn))
 
-    # ── Build weekly outlook month-end closes for this tab ────────────────────
-    # Replicate the weekly close chain using the same logic as the weekly tab
-    # so the 3-month focus uses the OUTLOOK close (not just Book2) as opening balance
-    _n_act   = 4
-    _act_wks = weekly_raw.index[-_n_act:].tolist()
-    _fc_wks  = fc_weeks  # already computed
-    _all_wks = _act_wks + _fc_wks
-    _N       = len(_all_wks)
+    # ── Use shared weekly close chain (includes overrides + sliders) ─────────────
+    _wk_outlook_month_close = shared_month_end_close
 
-    # Build simplified net per week (core rows only, no overrides — just baseline)
-    _CORE_IN  = ['DIRECT RECEIPTS','AGENT RECEIPTS','FD RECEIPT','TUI RECEIPT']
-    _CORE_OUT = ['AP COGS','AP OVH','PAYROLL','TAX','FLIGHT COSTS']
-
-    def _wk_val(spec, wk, i):
-        if i < _n_act:
-            return float(weekly_raw.loc[wk, spec]) / 1000 if spec in weekly_raw.columns and wk in weekly_raw.index else 0.0
-        else:
-            return fc_base.get(spec, [0]*13)[i - _n_act] / 1000 if spec in fc_base else 0.0
-
-    _wk_net = []
-    for _i, _wk in enumerate(_all_wks):
-        _net = sum(_wk_val(s, _wk, _i) for s in _CORE_IN + _CORE_OUT)
-        _wk_net.append(_net)
-
-    # Apply adj_receipts / adj_payments sliders
-    for _i in range(_n_act, _N):
-        _wk_net[_i] = (
-            sum(_wk_val(s, _all_wks[_i], _i) * (1 + adj_receipts/100) for s in _CORE_IN) +
-            sum(_wk_val(s, _all_wks[_i], _i) * (1 + adj_payments/100) for s in ['AP COGS','AP OVH']) +
-            sum(_wk_val(s, _all_wks[_i], _i) for s in ['PAYROLL','TAX','FLIGHT COSTS'])
-        )
-
-    # Chain closes from actual opening
-    _open0    = (pos_total_uk / 1000) if use_actual_pos else (
-                float(fc[fc.index < _act_wks[0]].iloc[-1]['cash_uk']) / 1000
-                if not fc[fc.index < _act_wks[0]].empty else 0.0)
-    _closes_wk = [0.0] * _N
-    _closes_wk[0] = _open0 + _wk_net[0]
-    for _i in range(1, _N):
-        _closes_wk[_i] = _closes_wk[_i-1] + _wk_net[_i]
-
-    # Month-end close from weekly outlook = last week close in each month
-    def _wk_outlook_month_close(yr, mn):
-        """Return the weekly-outlook closing balance (£) at end of given month."""
-        wks_in_mn = [(i, w) for i, w in enumerate(_all_wks) if w.year == yr and w.month == mn]
-        if not wks_in_mn: return None
-        last_i = max(wks_in_mn, key=lambda x: x[0])[0]
-        return _closes_wk[last_i] * 1000  # back to £
 
     st.caption(
         f"Bank data to **{latest_date.strftime('%d %b %Y')}**. "
@@ -911,10 +1002,10 @@ with tabs[4]:
         fc_row   = fc_row.iloc[0]
         is_part  = (fyr == latest_yr and fmn == latest_mn)
 
-        # Opening balance: use weekly outlook end of prior month if available
+        # Opening balance: weekly outlook end of prior month (includes overrides + sliders)
         prev_mn_3, prev_yr_3 = (fmn-1, fyr) if fmn > 1 else (12, fyr-1)
-        wk_open = _wk_outlook_month_close(prev_yr_3, prev_mn_3)
-        prev_fc  = fc[(fc['Year'] == prev_yr_3) & (fc['Month'] == prev_mn_3)]
+        wk_open    = shared_month_end_close(prev_yr_3, prev_mn_3)
+        prev_fc    = fc[(fc['Year'] == prev_yr_3) & (fc['Month'] == prev_mn_3)]
         book2_open = float(prev_fc.iloc[0]['cash_uk']) if not prev_fc.empty else float(fc_row['cash_uk'])
         open_cash  = wk_open if wk_open is not None else book2_open
 
@@ -926,8 +1017,8 @@ with tabs[4]:
         headroom     = fc_uk_close - uk_req         # compliance = UK only
         hpct         = headroom / uk_req if uk_req > 0 else 0
 
-        # Weekly outlook close for THIS month (UK only — what we forecast)
-        wk_close_this   = _wk_outlook_month_close(fyr, fmn)
+        # Weekly outlook close for THIS month — from shared chain (includes overrides + sliders)
+        wk_close_this   = shared_month_end_close(fyr, fmn)
         wk_headroom     = (wk_close_this - uk_req) if wk_close_this is not None else None
         # ── Category definitions — explicit, no FX, no interco, no sweep ───────
         INFLOW_CORE  = ['AGENT RECEIPTS', 'FD RECEIPT', 'DIRECT RECEIPTS']
@@ -1189,7 +1280,7 @@ with tabs[5]:
             if all_act_c[i] is not None:
                 bar_colors.append(GREEN if v >= 0 else RED)
             else:
-                bar_colors.append('rgba(24,95,165,0.35)' if v >= 0 else 'rgba(226,75,74,0.35)')
+                bar_colors.append('rgba(28,20,100,0.35)' if v >= 0 else 'rgba(226,75,74,0.35)')
         fig_or.add_trace(go.Bar(
             x=all_labels_c, y=bar_vals,
             name='Actual (solid) / Forecast (faded)',
@@ -1452,6 +1543,10 @@ with tabs[6]:
         opens[i]  = closes[i-1]
         closes[i] = closes[i-1] + net[i]
 
+    # Store authoritative weekly closes in session state so 3-Month Focus uses same numbers
+    st.session_state['_wk_closes']   = closes      # £k
+    st.session_state['_wk_all_weeks'] = all_weeks
+
     # ── Override expander ─────────────────────────────────────────────────────
     ovr_labels = ['AP COGS','AP OVH','PAYROLL','FD RECEIPT','AGENT RECEIPTS',
                   'FX TRADE IN','FX TRADE OUT','FLIGHT COSTS','INTERCO (net)',
@@ -1645,7 +1740,7 @@ with tabs[6]:
 
     with ch2:
         st.caption("Weekly receipts vs payments (£k)")
-        bc = [BLUE if i < n_actuals else '#85B7EB' for i in range(N_W)]
+        bc = [BLUE if i < n_actuals else '#7B72C8' for i in range(N_W)]
         pc = [RED  if i < n_actuals else '#F09595' for i in range(N_W)]
         fig_bar = go.Figure()
         fig_bar.add_trace(go.Bar(x=wk_lbl, y=totR,
