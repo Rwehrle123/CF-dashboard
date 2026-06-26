@@ -888,30 +888,32 @@ with tabs[4]:
             rem       = days_in - latest_day
             frac_rem  = rem / days_in
             weeks_rem = rem / 7.0
-            # Remaining inflows = LY full month × fraction remaining
-            rem_in    = ly_inflow * frac_rem
-            # Remaining fixed outflows
+            # Remaining inflows = LY full month × fraction remaining × slider adjustment
+            rem_in    = ly_inflow * frac_rem * (1 + adj_receipts / 100)
+            # Remaining fixed outflows (flight, payroll, tax — not AP)
             rem_fixed = ly_fixed  * frac_rem
             # AP already paid this month
             ap_mtd    = (abs(safe_get(uk_out_spec, fyr, fmn, 'AP COGS')) +
                          abs(safe_get(uk_out_spec, fyr, fmn, 'AP OVH')))
-            # Total AP budget for month:
-            # opening + expected remaining inflows - forecast close - remaining fixed
-            # Subtract already-paid AP to get remaining AP capacity
+            # Total AP budget = opening + expected remaining inflows − forecast close − remaining fixed
+            # AP slider adjusts the AP run rate benchmark (not the budget — budget is cash-driven)
             total_ap_budget = open_cash + rem_in - fc_close - rem_fixed
             allow_ap_remain = max(0, total_ap_budget - ap_mtd)
-            # Weekly AP capacity for remaining weeks
             allow_ap_per_wk = allow_ap_remain / max(weeks_rem, 0.5)
         else:
             rem       = days_in
             frac_rem  = 1.0
             weeks_rem = weeks_in
-            rem_in    = ly_inflow
+            # Full future month — apply sliders to full month estimate
+            rem_in    = ly_inflow * (1 + adj_receipts / 100)
             rem_fixed = ly_fixed
             ap_mtd    = 0.0
             total_ap_budget  = open_cash + rem_in - fc_close - rem_fixed
             allow_ap_remain  = max(0, total_ap_budget)
             allow_ap_per_wk  = allow_ap_remain / weeks_in
+
+        # LY AP adjusted by AP slider for comparison
+        ly_ap_for_period_adj = ly_ap_total * frac_rem * (1 + adj_payments / 100)
 
         # CY actuals to date
         cy_inflow_mtd = sum(safe_get(uk_in_spec, fyr, fmn, c)
@@ -919,7 +921,8 @@ with tabs[4]:
 
         # How much to hold vs LY run rate
         ly_ap_for_period = ly_ap_total * frac_rem
-        hold_vs_ly       = max(0, ly_ap_for_period - allow_ap_remain)
+        # hold_vs_ly uses slider-adjusted LY rate so AP slider affects the verdict
+        hold_vs_ly       = max(0, ly_ap_for_period_adj - allow_ap_remain)
         ly_ap_per_wk     = ly_ap_total / weeks_in
 
         badge = "🚨 Breach" if hpct < 0 else ("⚠️ Monitor" if hpct < 0.20 else "✅ On track")
@@ -964,10 +967,13 @@ with tabs[4]:
 
             # Monthly budget
             m1, m2 = st.columns(2)
+            adj_note_3mo = ""
+            if adj_receipts != 0: adj_note_3mo += f" · receipts {adj_receipts:+d}%"
+            if adj_payments != 0: adj_note_3mo += f" · AP {adj_payments:+d}%"
             m1.metric(
                 "Total AP budget this " + ("month (remaining)" if is_part else "month"),
                 fmt(allow_ap_remain),
-                delta=f"LY same period: {fmt(ly_ap_for_period)}",
+                delta=f"LY rate: {fmt(ly_ap_for_period_adj)}" + (adj_note_3mo if adj_note_3mo else ""),
                 delta_color="off"
             )
             m2.metric(
