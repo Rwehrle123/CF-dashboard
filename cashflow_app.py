@@ -1019,12 +1019,14 @@ with tabs[4]:
         fc_ie_close  = float(fc_row['cash_ireland'])
         fc_close     = fc_uk_close + fc_ie_close   # total cash
         uk_req       = float(fc_row['uk_required'])
-        headroom     = fc_uk_close - uk_req         # compliance = UK only
+        headroom     = fc_close - uk_req            # total headroom (easy to move between UK/IE)
         hpct         = headroom / uk_req if uk_req > 0 else 0
 
         # Weekly outlook close for THIS month — from shared chain (includes overrides + sliders)
         wk_close_this   = shared_month_end_close(fyr, fmn)
-        wk_headroom     = (wk_close_this - uk_req) if wk_close_this is not None else None
+        # Total headroom: add Ireland forecast close to weekly UK outlook
+        wk_total_close  = (wk_close_this + fc_ie_close) if wk_close_this is not None else None
+        wk_headroom     = (wk_total_close - uk_req) if wk_total_close is not None else None
         # ── Category definitions — explicit, no FX, no interco, no sweep ───────
         INFLOW_CORE  = ['AGENT RECEIPTS', 'FD RECEIPT', 'DIRECT RECEIPTS']
         # Fixed outflows: things that happen regardless and can't be deferred
@@ -1100,11 +1102,11 @@ with tabs[4]:
 
             # ── Cash position — forecast file vs weekly outlook ────────────────
             st.markdown("**Cash position**")
-            wk_cl_fmt  = fmt(wk_close_this)  if wk_close_this  is not None else "—"
+            wk_cl_fmt  = fmt(wk_total_close) if wk_total_close is not None else "—"
             wk_hr_fmt  = fmt(wk_headroom)    if wk_headroom    is not None else "—"
             wk_hr_pct  = f"({wk_headroom/uk_req:.0%})" if wk_headroom is not None and uk_req > 0 else ""
-            # Compare weekly UK outlook vs forecast UK close
-            var_close  = (wk_close_this - fc_uk_close) if wk_close_this is not None else None
+            # Compare total close: weekly UK + IE forecast close vs total forecast close
+            var_close  = (wk_total_close - fc_close) if wk_total_close is not None else None
             var_fmt    = (f"**{'+' if var_close>=0 else ''}{fmt(var_close)}**"
                          if var_close is not None else "—")
             st.markdown(
@@ -1115,8 +1117,8 @@ with tabs[4]:
                 f"| Ireland close | {fmt(fc_ie_close)} | — |\n"
                 f"| **Total close** | **{fmt(fc_close)}** | **{wk_cl_fmt}** |\n"
                 f"| UK required | {fmt(uk_req)} | {fmt(uk_req)} |\n"
-                f"| UK headroom | {fmt(headroom)} ({hpct:.0%}) | **{wk_hr_fmt}** {wk_hr_pct} |\n"
-                f"| Variance vs fcst (UK) | | {var_fmt} |"
+                f"| Total headroom | **{fmt(headroom)}** ({hpct:.0%}) | **{wk_hr_fmt}** {wk_hr_pct} |\n"
+                f"| Variance vs fcst | | {var_fmt} |"
             )
             if var_close is not None and var_close < -500000:
                 st.error(f"⚠️ Weekly outlook {fmt(abs(var_close))} **below** forecast target — "
