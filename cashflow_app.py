@@ -550,7 +550,7 @@ else:
     room_to_pay      = None
     ap_headroom      = None
     days_remaining   = 0
-    kpi_subtitle     = f"Forecast file forecast {MN[latest_mn]} {latest_yr} month-end"
+    kpi_subtitle     = f"Forecast {MN[latest_mn]} {latest_yr} month-end"
 
 # Headroom: uses overridden req_now if client money override is set
 hroom_now = kpi_uk_cash - req_now
@@ -806,12 +806,14 @@ def build_yoy_table(in_spec, out_spec, cats, is_out, entity_label):
 with tabs[2]:
     uk_sub = st.tabs(["📥 UK Inflow YoY", "📤 UK Outflow YoY"])
     with uk_sub[0]:
-        avail_in = [c for c in KEY_INFLOW if c in uk_in_spec.columns]
-        st.caption("Like-for-like: same calendar month year-on-year. Actual months only.")
+        YOY_EXCL = {'FX TRADE IN', 'FX TRADE OUT'}
+        avail_in = [c for c in KEY_INFLOW if c in uk_in_spec.columns and c not in YOY_EXCL]
+        st.caption("Like-for-like: same calendar month year-on-year. FX trade excluded (lumpy/treasury).")
         build_yoy_table(uk_in_spec, uk_out_spec, avail_in, False, "UK")
     with uk_sub[1]:
-        avail_out = [c for c in KEY_OUTFLOW if c in uk_out_spec.columns]
-        st.caption("Outflows as positive. Red YoY = payments running above prior year.")
+        YOY_EXCL = {'FX TRADE IN', 'FX TRADE OUT'}
+        avail_out = [c for c in KEY_OUTFLOW if c in uk_out_spec.columns and c not in YOY_EXCL]
+        st.caption("Outflows as positive. FX trade excluded. Red YoY = payments running above prior year.")
         build_yoy_table(uk_in_spec, uk_out_spec, avail_out, True, "UK")
 
 with tabs[3]:
@@ -820,14 +822,18 @@ with tabs[3]:
     ie_out_cats = [c for c in KEY_OUTFLOW if c in ie_out_spec.columns]
     ie_sub = st.tabs(["📥 Ireland Inflow YoY", "📤 Ireland Outflow YoY"])
     with ie_sub[0]:
+        YOY_EXCL = {'FX TRADE IN', 'FX TRADE OUT'}
+        ie_in_cats = [c for c in KEY_INFLOW if c in ie_in_spec.columns and c not in YOY_EXCL]
         if ie_in_cats:
-            st.caption("Inflows only. Green YoY = growing vs prior year. Red = declining.")
+            st.caption("Inflows only. FX trade excluded. Green YoY = growing vs prior year. Red = declining.")
             build_yoy_table(ie_in_spec, ie_out_spec, ie_in_cats, False, "Ireland")
         else:
             st.info("No Ireland inflow data available.")
     with ie_sub[1]:
+        YOY_EXCL = {'FX TRADE IN', 'FX TRADE OUT'}
+        ie_out_cats = [c for c in KEY_OUTFLOW if c in ie_out_spec.columns and c not in YOY_EXCL]
         if ie_out_cats:
-            st.caption("Outflows shown as positive values. Red YoY = running above prior year (review payments).")
+            st.caption("Outflows as positive. FX trade excluded. Red YoY = running above prior year.")
             build_yoy_table(ie_in_spec, ie_out_spec, ie_out_cats, True, "Ireland")
         else:
             st.info("No Ireland outflow data available.")
@@ -1009,9 +1015,9 @@ with tabs[4]:
                 "| | Forecast target | Weekly outlook |\n"
                 "|---|---|---|\n"
                 f"| Opening (UK) | {fmt(book2_open)} | **{fmt(open_cash)}** |\n"
-                f"| UK close | {fmt(fc_uk_close)} | **{wk_cl_fmt}** |\n"
+                f"| UK close | {fmt(fc_uk_close)} | {wk_cl_fmt} |\n"
                 f"| Ireland close | {fmt(fc_ie_close)} | — |\n"
-                f"| Total close | **{fmt(fc_close)}** | — |\n"
+                f"| **Total close** | **{fmt(fc_close)}** | **{wk_cl_fmt}** |\n"
                 f"| UK required | {fmt(uk_req)} | {fmt(uk_req)} |\n"
                 f"| UK headroom | {fmt(headroom)} ({hpct:.0%}) | **{wk_hr_fmt}** {wk_hr_pct} |\n"
                 f"| Variance vs fcst (UK) | | {var_fmt} |"
@@ -1304,7 +1310,7 @@ with tabs[5]:
             if trend_vs_ly > 0.2e6:
                 st.success(f"📈 Running **{fmt(trend_vs_ly)}/month ahead** of prior year on average.")
             if trend_vs_fc > 0.2e6:
-                st.success(f"📈 Running **{fmt(trend_vs_fc)}/month ahead** of Forecast file forecast on average.")
+                st.success(f"📈 Running **{fmt(trend_vs_fc)}/month ahead** of forecast file on average.")
             if not breach_fc.empty and trend_vs_fc > 0:
                 st.info(
                     f"💡 If positive trend continues, forecast breach months could see "
@@ -1317,7 +1323,7 @@ with tabs[5]:
             if trend_vs_ly < -0.2e6:
                 st.error(f"📉 Running **{fmt(abs(trend_vs_ly))}/month below** prior year on average.")
             if trend_vs_fc < -0.2e6:
-                st.error(f"📉 Running **{fmt(abs(trend_vs_fc))}/month below** Forecast file forecast.")
+                st.error(f"📉 Running **{fmt(abs(trend_vs_fc))}/month below** forecast file.")
             if not breach_fc.empty:
                 st.error("🚨 **Forecast breach months:** " + ", ".join(
                     f"{MN[int(r['Month'])]} {int(r['Year'])} ({fmt(r['uk_headroom'])})"
@@ -1537,7 +1543,7 @@ with tabs[6]:
 
     # ── Book2 month-end targets — show in the last week of each calendar month ─
     # For each week column, find if it's the last week whose WeekStart falls in
-    # a given month, then show Forecast file forecast close / client money / headroom.
+    # a given month, then show forecast file close / client money / headroom.
     # Only shown once per month (the week that closes out that month).
 
     def get_book2_for_week(wk):
@@ -1553,7 +1559,8 @@ with tabs[6]:
         if book2_row.empty:
             return None, None, None
         row = book2_row.iloc[0]
-        fc_close_k  = float(row['cash_uk'])      / 1000
+        # Total cash close = UK + Ireland
+        fc_close_k  = (float(row['cash_uk']) + float(row['cash_ireland'])) / 1000
         cm_k        = float(row['client_money'])  / 1000
         headroom_k  = float(row['uk_headroom'])   / 1000
         return fc_close_k, cm_k, headroom_k
@@ -1595,7 +1602,7 @@ with tabs[6]:
             row[wk_hdrs[i]] = vals_fn(i)
         display_rows.append({'_kind': kind, '_label': label, **row})
 
-    dr_me('Forecast file forecast close',   lambda i: fkw_me(b2_fc_close[i]),  'forecast')
+    dr_me('Forecast file close',   lambda i: fkw_me(b2_fc_close[i]),  'forecast')
     dr_me('Client money',           lambda i: fkw_me(b2_cm[i]),         'forecast')
     dr_me('UK headroom vs req',     lambda i: fkw_me(b2_headroom[i]),   'forecast')
     dr_me('Variance vs forecast close',lambda i: fkw_var(b2_variance[i]),  'variance')
@@ -1710,8 +1717,8 @@ with tabs[7]:
 | Forecast / client money file | Monthly forecast closing balances + client money | Excel — Row 1: dates, Row 2: client money, Row 3: UK cash, Row 4: Ireland cash |
 
 **Optional sidebar inputs (entered manually each session):**
-- **SHT / SHGI / TMD actual positions** — GBP equivalent from the daily cash balance sheet. Overrides Book2 as the opening balance anchor.
-- **Client money override** — enter the expected month-end client money figure if it differs from Book2.
+- **SHT / SHGI / TMD actual positions** — GBP equivalent from the daily cash balance sheet. Overrides the forecast file as the opening balance anchor.
+- **Client money override** — enter the expected month-end client money figure if it differs from the forecast file.
 - **FX budget rates** — EUR, USD and CAD to GBP conversion rates applied to all non-GBP transactions.
 - **Remaining flows sliders** — adjust expected receipts and AP payments vs prior year run rate for the rest of the current month.
 """)
