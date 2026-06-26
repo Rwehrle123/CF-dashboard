@@ -364,6 +364,16 @@ with st.sidebar:
         st.success(f"Total: £{pos_total:,.0f}  ·  UK: £{pos_total_uk:,.0f}  ·  IE: £{pos_total_ireland:,.0f}")
     else:
         st.caption("Enter values above to use actual position (currently using Book2)")
+    st.divider()
+    st.markdown("**Client money override**")
+    st.caption("Override Book2 client money for current month if you have a more accurate figure.")
+    cm_override = st.number_input(
+        "Client money (£) — leave 0 to use Book2",
+        value=0, min_value=0, max_value=999_999_999, step=100_000, format="%d")
+    use_cm_override = cm_override > 0
+    if use_cm_override:
+        st.success(f"Client money: £{cm_override:,.0f} · UK req: £{cm_override*0.70:,.0f}")
+
     if use_actual_pos:
         st.divider()
         st.markdown("**Remaining flows adjustment**")
@@ -436,8 +446,9 @@ def is_actual(yr, mn):
 fc['is_actual']  = fc.apply(lambda r: is_actual(int(r['Year']), int(r['Month'])), axis=1)
 fc['is_partial'] = fc.apply(lambda r: int(r['Year']) == latest_yr and int(r['Month']) == latest_mn, axis=1)
 
-latest_fc = fc[fc['is_actual']].iloc[-1]
-req_now   = float(latest_fc['uk_required'])
+latest_fc      = fc[fc['is_actual']].iloc[-1]
+kpi_client_mon = float(cm_override) if use_cm_override else float(latest_fc['client_money'])
+req_now        = kpi_client_mon * uk_pct / 100
 # If actual position entered, use that for headroom — more accurate than Book2
 if use_actual_pos:
     hroom_now = pos_total_uk - req_now
