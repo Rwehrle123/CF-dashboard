@@ -117,8 +117,13 @@ WEEKLY_LOCK = {'PAYROLL'}
 MN = {1:'Jan', 2:'Feb', 3:'Mar', 4:'Apr',  5:'May',  6:'Jun',
       7:'Jul', 8:'Aug', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Dec'}
 
-BLUE   = '#1C1464'  # SHG navy; GREEN  = '#3B6D11'; LBLUE  = '#3D3580'  # SHG navy light; LGREEN = '#639922'
-RED    = '#E24B4A'; AMBER  = '#C9A84C'  # SHG gold; GREY   = 'rgba(0,0,0,0.06)'
+BLUE   = '#1C1464'  # SHG navy
+GREEN  = '#3B6D11'
+LBLUE  = '#3D3580'  # SHG navy light
+LGREEN = '#639922'
+RED    = '#E24B4A'
+AMBER  = '#C9A84C'  # SHG gold
+GREY   = 'rgba(0,0,0,0.06)'
 DEFAULT_FX = {'EUR': 0.86, 'USD': 0.76, 'CAD': 0.53}
 
 
