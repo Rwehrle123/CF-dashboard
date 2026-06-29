@@ -379,7 +379,7 @@ with st.sidebar:
     fx_rates = {'EUR': eur_rate, 'USD': usd_rate, 'CAD': cad_rate, 'GBP': 1.0}
     st.divider()
     st.markdown("**Actual cash positions (GBP equiv)**")
-    st.caption("Enter from the daily cash balance sheet. Overrides forecast file as opening balance.")
+    st.caption("Enter total group position. SHT + TMD = UK cash. SHGI = Ireland. All three feed the opening balance.")
     pos_date = st.date_input("As at date", value=None, help="Date of the cash position snapshot")
     pos_sht  = st.number_input("SHT (£)",  value=0, min_value=0, max_value=999_999_999, step=1000, format="%d")
     pos_shgi = st.number_input("SHGI (£)", value=0, min_value=0, max_value=999_999_999, step=1000, format="%d")
@@ -738,7 +738,8 @@ def _build_shared_closes(weekly_raw, od_weekly, fc_weeks, fc_base, fc,
 
     # Opening balance
     book2_before = fc[fc.index < act_wks[0]]
-    open_k = (pos_total_uk / 1000) if use_actual_pos else              (float(book2_before.iloc[-1]['cash_uk']) / 1000
+    open_k = (pos_total / 1000) if use_actual_pos else (
+              (float(book2_before.iloc[-1]['cash_uk']) + float(book2_before.iloc[-1]['cash_ireland'])) / 1000
               if not book2_before.empty else 0.0)
 
     closes_k = [0.0] * N
@@ -774,16 +775,40 @@ actual_weeks = weekly_raw.index[-n_actuals:].tolist()
 all_weeks    = actual_weeks + fc_weeks
 N_W          = len(all_weeks)
 
-# Opening balance: use actual cash position if entered, else fall back to Book2
+# Opening balance: TOTAL cash (UK + Ireland)
 first_wk     = actual_weeks[0]
 book2_before = fc[fc.index < first_wk]
-book2_open   = float(book2_before.iloc[-1]['cash_uk']) / 1000 if not book2_before.empty else 0.0
+if not book2_before.empty:
+    _b2 = book2_before.iloc[-1]
+    book2_open = (float(_b2['cash_uk']) + float(_b2['cash_ireland'])) / 1000
+else:
+    book2_open = 0.0
+
 if use_actual_pos:
-    # Use total UK GBP equiv entered in sidebar (SHT + TMD)
-    # Divide by 1000 as weekly table works in £k
-    open_base = pos_total_uk / 1000
+    # Total group: SHT + TMD (UK) + SHGI (Ireland)
+    open_base = pos_total / 1000   # pos_total = pos_sht + pos_shgi + pos_tmd
 else:
     open_base = book2_open
+
+# Ireland balance offset per week: distribute Ireland forecast cash change weekly
+# We have Ireland actual position (SHGI) but not weekly Ireland transactions.
+# Strategy: hold Ireland at the actual/forecast balance and add it to each week's close.
+# For actuals: Ireland stays at pos_shgi (actual). For forecast: interpolate from
+# forecast file Ireland close month by month.
+def _ie_balance_for_week(wk, i):
+    """Ireland balance (£k) to add to UK chain close for a given week."""
+    if i < n_actuals:
+        # Actual weeks: use entered Ireland position if available, else forecast
+        if use_actual_pos:
+            return pos_shgi / 1000
+        else:
+            # Use forecast file Ireland close for that month
+            fc_row_ie = fc[(fc['Year'] == wk.year) & (fc['Month'] == wk.month)]
+            return float(fc_row_ie.iloc[0]['cash_ireland']) / 1000 if not fc_row_ie.empty else 0.0
+    else:
+        # Forecast weeks: use forecast file Ireland close for that month
+        fc_row_ie = fc[(fc['Year'] == wk.year) & (fc['Month'] == wk.month)]
+        return float(fc_row_ie.iloc[0]['cash_ireland']) / 1000 if not fc_row_ie.empty else 0.0
 
 ROW_SPECS = [
     ('DIRECT RECEIPTS', 'DIRECT RECEIPTS',  False),
@@ -854,12 +879,24 @@ for label, spec, blank_fc in ROW_SPECS:
 totR  = [sum(data[l][i] for l in RECEIPT_LABELS) for i in range(N_W)]
 totP  = [sum(data[l][i] for l in PAYMENT_LABELS) for i in range(N_W)]
 net   = [totR[i] + totP[i] for i in range(N_W)]
-opens = [0.0] * N_W;  closes = [0.0] * N_W
-opens[0]  = open_base
-closes[0] = open_base + net[0]
+
+# Ireland balance per week (added to UK chain to give total cash)
+ie_bal = [_ie_balance_for_week(all_weeks[i], i) for i in range(N_W)]
+
+# UK-only running balance (just the flows)
+uk_closes = [0.0] * N_W
+uk_open_base = open_base - ie_bal[0]  # strip Ireland from opening to get UK-only start
+uk_closes[0] = uk_open_base + net[0]
 for i in range(1, N_W):
-    opens[i]  = closes[i-1]
-    closes[i] = closes[i-1] + net[i]
+    uk_closes[i] = uk_closes[i-1] + net[i]
+
+# Total closes = UK running balance + Ireland balance each week
+opens  = [0.0] * N_W;  closes = [0.0] * N_W
+opens[0]  = open_base
+closes[0] = uk_closes[0] + ie_bal[0]
+for i in range(1, N_W):
+    opens[i]  = uk_closes[i-1] + ie_bal[i-1]   # prior week total close
+    closes[i] = uk_closes[i]   + ie_bal[i]
 
 # aliases used by shared_month_end_close — defined here after closes is built
 _shared_all_weeks = all_weeks
@@ -1124,10 +1161,9 @@ with tabs[4]:
         headroom     = fc_close - uk_req            # total headroom (easy to move between UK/IE)
         hpct         = headroom / uk_req if uk_req > 0 else 0
 
-        # Weekly outlook close for THIS month — from shared chain (includes overrides + sliders)
-        wk_close_this   = shared_month_end_close(fyr, fmn)
-        # Total headroom: add Ireland forecast close to weekly UK outlook
-        wk_total_close  = (wk_close_this + fc_ie_close) if wk_close_this is not None else None
+        # Weekly outlook close for THIS month — total cash (UK + Ireland)
+        wk_close_this   = shared_month_end_close(fyr, fmn)  # now total cash
+        wk_total_close  = wk_close_this   # already total — no need to add Ireland separately
         wk_headroom     = (wk_total_close - uk_req) if wk_total_close is not None else None
         # ── Category definitions — explicit, no FX, no interco, no sweep ───────
         INFLOW_CORE  = ['AGENT RECEIPTS', 'FD RECEIPT', 'DIRECT RECEIPTS']
@@ -1208,9 +1244,9 @@ with tabs[4]:
             wk_cl_fmt  = fmt(wk_total_close) if wk_total_close is not None else "—"
             wk_hr_fmt  = fmt(wk_headroom)    if wk_headroom    is not None else "—"
             wk_hr_pct  = f"({wk_headroom/uk_req:.0%})" if wk_headroom is not None and uk_req > 0 else ""
-            # Variance: UK weekly chain close vs UK forecast close
+            # Variance: total weekly close vs total forecast close
             # Matches 4+13 "Variance vs forecast close" row exactly
-            var_close  = (wk_close_this - fc_uk_close) if wk_close_this is not None else None
+            var_close  = (wk_close_this - fc_close) if wk_close_this is not None else None
             var_fmt    = (f"**{'+' if var_close>=0 else ''}{fmt(var_close)}**"
                          if var_close is not None else "—")
             st.markdown(
@@ -1583,11 +1619,10 @@ with tabs[6]:
     # ── Actual position banner ────────────────────────────────────────────────
     if use_actual_pos:
         st.info(
-            f"📍 Opening balance anchored to actual position: "
-            f"SHT £{pos_sht:,.0f} + TMD £{pos_tmd:,.0f} = **UK £{pos_total_uk:,.0f}** "
-            f"(W{actual_weeks[0].isocalendar()[1]} {actual_weeks[0].strftime('%d %b')} opening = "
-            f"**£{open_base:,.0f}k**). "
-            f"Closes chain from this base through {all_weeks[-1].strftime('%b %Y')}."
+            f"📍 Total opening balance from actual positions: "
+            f"SHT £{pos_sht:,.0f} + TMD £{pos_tmd:,.0f} + SHGI £{pos_shgi:,.0f} = "
+            f"**Total £{pos_total:,.0f}** → **£{open_base:,.0f}k** "
+            f"(W{actual_weeks[0].isocalendar()[1]} {actual_weeks[0].strftime('%d %b')} opening)."
         )
 
     # ── Override expander ─────────────────────────────────────────────────────
@@ -1663,7 +1698,7 @@ with tabs[6]:
             row[wk_hdrs[i]] = fkw(v, kind not in ('total', 'balance'))
         display_rows.append({'_kind': kind, '_label': label, **row})
 
-    dr('Opening balance', opens, 'balance')
+    dr('Opening balance',      opens, 'balance')
     display_rows.append({'_kind': 'header', '_label': 'RECEIPTS', 'Row': 'RECEIPTS',
                           **{h: '' for h in wk_hdrs}})
     for label in RECEIPT_LABELS:
@@ -1697,8 +1732,8 @@ with tabs[6]:
         if book2_row.empty:
             return None, None, None
         row = book2_row.iloc[0]
-        # UK cash close only — matches closes[] which is UK-only chain
-        fc_close_k  = float(row['cash_uk']) / 1000
+        # Total cash close (UK + Ireland) — matches closes[] which is now total
+        fc_close_k  = (float(row['cash_uk']) + float(row['cash_ireland'])) / 1000
         cm_k        = float(row['client_money'])  / 1000
         headroom_k  = float(row['uk_headroom'])   / 1000
         return fc_close_k, cm_k, headroom_k
@@ -1740,7 +1775,7 @@ with tabs[6]:
             row[wk_hdrs[i]] = vals_fn(i)
         display_rows.append({'_kind': kind, '_label': label, **row})
 
-    dr_me('Forecast UK close',      lambda i: fkw_me(b2_fc_close[i]),  'forecast')
+    dr_me('Forecast total close',   lambda i: fkw_me(b2_fc_close[i]),  'forecast')
     dr_me('Client money',           lambda i: fkw_me(b2_cm[i]),         'forecast')
     dr_me('UK headroom vs req',     lambda i: fkw_me(b2_headroom[i]),   'forecast')
     dr_me('Variance vs fcst (UK close)',lambda i: fkw_var(b2_variance[i]),  'variance')
