@@ -1244,24 +1244,23 @@ with tabs[4]:
             st.markdown("### 🔑 AP payment capacity")
 
             # Pull AP forecast from the 4+13 weekly table for this month
-            # Sum AP COGS + AP OVH across all weeks in this month from the shared data[]
+            # data[] values are in £k — convert to £ for display consistency
+            # AP COGS/OVH are negative in data[] so use abs()
             fc_ap_wks = [(i, w) for i, w in enumerate(all_weeks)
                          if w.year == fyr and w.month == fmn and i >= n_actuals]
-            fc_ap_cogs_monthly = sum(abs(data['AP COGS'][i]) for i, _ in fc_ap_wks)
-            fc_ap_ovh_monthly  = sum(abs(data['AP OVH'][i])  for i, _ in fc_ap_wks)
+            fc_ap_cogs_monthly = sum(abs(data['AP COGS'][i]) for i, _ in fc_ap_wks) * 1000
+            fc_ap_ovh_monthly  = sum(abs(data['AP OVH'][i])  for i, _ in fc_ap_wks) * 1000
             fc_ap_total_monthly = fc_ap_cogs_monthly + fc_ap_ovh_monthly
-            # Weeks remaining in this month (forecast weeks only)
             fc_weeks_in_month   = max(len(fc_ap_wks), 1)
             fc_ap_per_wk        = fc_ap_total_monthly / fc_weeks_in_month
 
-            # For current partial month: add actual AP paid to date to get full month picture
+            # For current partial month: add actual AP paid to date for full month picture
             if is_part:
                 fc_ap_full_month = ap_mtd + fc_ap_total_monthly
             else:
                 fc_ap_full_month = fc_ap_total_monthly
 
-            # Maximum AP headroom = cash headroom ceiling (can't exceed this without breach)
-            # allow_ap_remain is the maximum AP that keeps closing balance at forecast target
+            # Maximum AP headroom = cash ceiling (allow_ap_remain is already in £)
             max_ap_headroom     = allow_ap_remain
             max_ap_per_wk       = max_ap_headroom / max(weeks_rem, 0.5)
 
