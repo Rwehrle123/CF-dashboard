@@ -276,14 +276,15 @@ def build_weekly(df_raw, fx_rates):
     df['Amount_GBP'] = df.apply(
         lambda r: r['Amount'] * fx_rates.get(r['Currency'], 1.0), axis=1)
 
-    # UK operational flows (excl overnight deposits)
-    df_uk = df[(df['TrnSpec'] != 'OVERNIGHT DEPOSIT') & (df['entity'] == 'UK')].copy()
+    # All operational flows (UK + Ireland, excl overnight deposits)
+    # Interco nets within the consolidated group — intra-group transfers cancel
+    df_all = df[df['TrnSpec'] != 'OVERNIGHT DEPOSIT'].copy()
 
-    # Overnight deposit net per week (proxy for interest income)
+    # Overnight deposit net per week (UK only — Ireland ODs not in data)
     df_od = df[(df['TrnSpec'] == 'OVERNIGHT DEPOSIT') & (df['entity'] == 'UK')].copy()
     od_weekly = df_od.groupby('WeekStart')['Amount_GBP'].sum().round(0)
 
-    weekly = (df_uk
+    weekly = (df_all
               .groupby(['WeekStart', 'TrnSpec'])['Amount_GBP']
               .sum().round(0)
               .unstack('TrnSpec')
@@ -519,7 +520,7 @@ if use_actual_pos and pos_date is not None:
     KEY_OUT_CORE = ['AP COGS','AP OVH','FLIGHT COSTS','PAYROLL','OTHER COSTS','TAX']
 
     # Build weekly pivot from df_op (UK only, operational)
-    df_op_w = df_op[df_op['entity'] == 'UK'].copy()
+    df_op_w = df_op.copy()  # all entities — total cash view
     df_op_w['WeekStart'] = pd.to_datetime(
         df_op_w['PostDate'].dt.to_period('W-SUN').apply(lambda p: p.start_time))
 
@@ -790,25 +791,31 @@ if use_actual_pos:
 else:
     open_base = book2_open
 
+# Find which week the actual position date falls in (for chain reanchor)
+# If pos_date is within the actual weeks, we reanchor at that week
+if use_actual_pos and pos_date is not None:
+    pos_ts      = pd.Timestamp(pos_date)
+    pos_wk_start = pos_ts.to_period('W-SUN').start_time
+    pos_wk_start = pd.Timestamp(pos_wk_start)
+    # Find index of that week in all_weeks (or last actual week if pos_date is latest)
+    pos_wk_idx  = next(
+        (i for i, w in enumerate(all_weeks) if pd.Timestamp(w) == pos_wk_start),
+        len(actual_weeks) - 1   # default to last actual week
+    )
+else:
+    pos_wk_idx = None
+
 # Ireland balance offset per week: distribute Ireland forecast cash change weekly
 # We have Ireland actual position (SHGI) but not weekly Ireland transactions.
 # Strategy: hold Ireland at the actual/forecast balance and add it to each week's close.
 # For actuals: Ireland stays at pos_shgi (actual). For forecast: interpolate from
 # forecast file Ireland close month by month.
 def _ie_balance_for_week(wk, i):
-    """Ireland balance (£k) to add to UK chain close for a given week."""
-    if i < n_actuals:
-        # Actual weeks: use entered Ireland position if available, else forecast
-        if use_actual_pos:
-            return pos_shgi / 1000
-        else:
-            # Use forecast file Ireland close for that month
-            fc_row_ie = fc[(fc['Year'] == wk.year) & (fc['Month'] == wk.month)]
-            return float(fc_row_ie.iloc[0]['cash_ireland']) / 1000 if not fc_row_ie.empty else 0.0
-    else:
-        # Forecast weeks: use forecast file Ireland close for that month
-        fc_row_ie = fc[(fc['Year'] == wk.year) & (fc['Month'] == wk.month)]
-        return float(fc_row_ie.iloc[0]['cash_ireland']) / 1000 if not fc_row_ie.empty else 0.0
+    """Ireland balance offset (£k) — now zero because Ireland transactions
+    are included directly in the weekly flow data (build_weekly uses all entities).
+    The opening balance already includes Ireland (pos_total = UK + IE).
+    Kept as a function in case we need to reintroduce the offset."""
+    return 0.0
 
 ROW_SPECS = [
     ('DIRECT RECEIPTS', 'DIRECT RECEIPTS',  False),
@@ -883,19 +890,33 @@ net   = [totR[i] + totP[i] for i in range(N_W)]
 # Ireland balance per week (added to UK chain to give total cash)
 ie_bal = [_ie_balance_for_week(all_weeks[i], i) for i in range(N_W)]
 
-# UK-only running balance (just the flows)
+# Build UK-only running balance from bank flows
+# Then reanchor at the actual position date if entered
 uk_closes = [0.0] * N_W
-uk_open_base = open_base - ie_bal[0]  # strip Ireland from opening to get UK-only start
-uk_closes[0] = uk_open_base + net[0]
+_uk_open  = book2_open - (_ie_balance_for_week(all_weeks[0], 0))  # UK-only book2 open
+uk_closes[0] = _uk_open + net[0]
 for i in range(1, N_W):
     uk_closes[i] = uk_closes[i-1] + net[i]
 
+# Reanchor: if actual position entered, find the as-at week and reset the chain
+# so that week's CLOSE = actual total position, then flow forward from there
+if pos_wk_idx is not None:
+    # Compute what the chain thinks the close is at pos_wk_idx
+    chain_close_at_anchor = uk_closes[pos_wk_idx] + ie_bal[pos_wk_idx]
+    # Actual close = pos_total / 1000
+    anchor_k = pos_total / 1000
+    # Adjustment needed
+    adjustment = anchor_k - chain_close_at_anchor
+    # Apply adjustment to all weeks from pos_wk_idx onwards
+    for i in range(pos_wk_idx, N_W):
+        uk_closes[i] += adjustment
+
 # Total closes = UK running balance + Ireland balance each week
 opens  = [0.0] * N_W;  closes = [0.0] * N_W
-opens[0]  = open_base
+opens[0]  = book2_open                        # chain starts from forecast file open
 closes[0] = uk_closes[0] + ie_bal[0]
 for i in range(1, N_W):
-    opens[i]  = uk_closes[i-1] + ie_bal[i-1]   # prior week total close
+    opens[i]  = uk_closes[i-1] + ie_bal[i-1]
     closes[i] = uk_closes[i]   + ie_bal[i]
 
 # aliases used by shared_month_end_close — defined here after closes is built
@@ -1608,21 +1629,22 @@ with tabs[6]:
     st.caption(
         f"All amounts £GBP equivalent at budget rates "
         f"(EUR×{eur_rate:.3f} · USD×{usd_rate:.3f} · CAD×{cad_rate:.3f}). "
-        f"Actual: last 4 weeks from bank data. "
-        f"Forecast: prior year same ISO week × YoY trend. "
-        f"Interco: net UK↔Ireland only — intra-UK transfers cancel. "
-        f"OD interest: actual net for actuals / £11k/week forecast."
+        f"Forecast: prior year same ISO week at FX budget rates — "
+        f"AP payments in EUR/USD are ~14% lower than face value due to FX conversion. "
+        f"Interco: net UK↔Ireland only. OD interest: actual net / £11k forecast."
     )
 
     # Data, opens, closes computed in shared pre-tab block below tabs definition
 
     # ── Actual position banner ────────────────────────────────────────────────
     if use_actual_pos:
+        _anchor_wk  = all_weeks[pos_wk_idx] if pos_wk_idx is not None else actual_weeks[-1]
+        _anchor_lbl = pd.Timestamp(_anchor_wk).strftime('%d %b %Y')
         st.info(
-            f"📍 Total opening balance from actual positions: "
+            f"📍 Actual positions entered as at {pos_date}: "
             f"SHT £{pos_sht:,.0f} + TMD £{pos_tmd:,.0f} + SHGI £{pos_shgi:,.0f} = "
-            f"**Total £{pos_total:,.0f}** → **£{open_base:,.0f}k** "
-            f"(W{actual_weeks[0].isocalendar()[1]} {actual_weeks[0].strftime('%d %b')} opening)."
+            f"**Total £{pos_total:,.0f}** · anchored to week of **{_anchor_lbl}** "
+            f"in the 4+13 table."
         )
 
     # ── Override expander ─────────────────────────────────────────────────────
